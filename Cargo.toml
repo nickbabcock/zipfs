@@ -1,0 +1,84 @@
+[package]
+name = "zipfs"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "A read-only FUSE filesystem for zip archives"
+license = "MIT"
+repository = "https://github.com/nickbabcock/zipfs"
+keywords = ["archive", "filesystem", "fuse", "zip"]
+categories = ["command-line-utilities", "compression", "filesystem"]
+
+[lints.rust]
+ambiguous_negative_literals = "warn"
+missing_debug_implementations = "warn"
+redundant_imports = "warn"
+redundant_lifetimes = "warn"
+trivial_numeric_casts = "warn"
+unsafe_op_in_unsafe_fn = "warn"
+unused_lifetimes = "warn"
+
+[lints.clippy]
+cargo = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+correctness = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+# nursery = { level = "warn", priority = -1 }  # Optional. It can report false positives.
+
+# These lints prevent specific constructs in source code.
+# They help keep the code consistent, clear, and brief.
+allow_attributes_without_reason = "warn"
+as_pointer_underscore = "warn"
+assertions_on_result_states = "warn"
+clone_on_ref_ptr = "warn"
+deref_by_slicing = "warn"
+disallowed_script_idents = "warn"
+empty_drop = "warn"
+empty_enum_variants_with_brackets = "warn"
+empty_structs_with_brackets = "warn"
+fn_to_numeric_cast_any = "warn"
+if_then_some_else_none = "warn"
+map_err_ignore = "warn"
+redundant_type_annotations = "warn"
+renamed_function_params = "warn"
+semicolon_outside_block = "warn"
+undocumented_unsafe_blocks = "warn"
+unnecessary_safety_comment = "warn"
+unnecessary_safety_doc = "warn"
+unneeded_field_pattern = "warn"
+unused_result_ok = "warn"
+too_long_first_doc_paragraph = "warn"
+
+# `fuser` currently brings in both versions through its proc-macro dependencies.
+multiple_crate_versions = "allow"
+
+[dependencies]
+# default-features = false keeps this on the pure-Rust mount path (fusermount3),
+# so no libfuse C headers are necessary.
+fuser = { version = "0.18", default-features = false }
+rawzip = "0.5"
+# The zlib-rs backend is pure Rust, gives the fastest inflate flate2 offers, and
+# supplies the SIMD Crc that entry verification uses.
+flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
+zstd = { version = "0.14", default-features = false, optional = true }
+lexopt = "0.3"
+libc = "0.2"
+log = "0.4"
+
+[target.'cfg(target_env = "musl")'.dependencies]
+mimalloc = { version = "0.1.52", default-features = false }
+
+[features]
+default = ["zstd"]
+zstd = ["dep:zstd"]
+
+[dev-dependencies]
+flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
+zstd = { version = "0.14", default-features = false }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
