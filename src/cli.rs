@@ -230,9 +230,9 @@ pub fn find(name: &str) -> Option<&'static Setting> {
 /// a setting answers to both.
 fn same_name(a: &str, b: &str) -> bool {
     a.len() == b.len()
-        && a.bytes().zip(b.bytes()).all(|(x, y)| {
-            x == y || (matches!(x, b'-' | b'_') && matches!(y, b'-' | b'_'))
-        })
+        && a.bytes()
+            .zip(b.bytes())
+            .all(|(x, y)| x == y || (matches!(x, b'-' | b'_') && matches!(y, b'-' | b'_')))
 }
 
 /// Applies a setting that a long option named, taking its value if it needs one.
@@ -374,8 +374,7 @@ fn apply_one(config: &mut Config, opt: &str) -> Result<(), String> {
                 Ok(())
             }
             Apply::Value(set) => {
-                let value =
-                    value.ok_or_else(|| format!("mount option '{key}' needs a value"))?;
+                let value = value.ok_or_else(|| format!("mount option '{key}' needs a value"))?;
                 set(config, value)
                     .map_err(|reason| format!("mount option '{key}={value}': {reason}"))
             }
@@ -452,10 +451,7 @@ mod tests {
                 find(&underscored).is_some(),
                 "'{underscored}' is not found by name"
             );
-            assert!(
-                help.contains(dashed),
-                "'{dashed}' is missing from the help"
-            );
+            assert!(help.contains(dashed), "'{dashed}' is missing from the help");
         }
     }
 
@@ -504,8 +500,14 @@ mod tests {
 
     #[test]
     fn underscores_and_dashes_name_the_same_option() {
-        assert_eq!(parse("source_buffer_size=8192").unwrap().source_buffer, 8192);
-        assert_eq!(parse("source-buffer-size=8192").unwrap().source_buffer, 8192);
+        assert_eq!(
+            parse("source_buffer_size=8192").unwrap().source_buffer,
+            8192
+        );
+        assert_eq!(
+            parse("source-buffer-size=8192").unwrap().source_buffer,
+            8192
+        );
     }
 
     #[test]

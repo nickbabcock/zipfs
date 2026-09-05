@@ -16,9 +16,13 @@ fn fuse_available() -> bool {
 }
 
 fn fusermount() -> Option<&'static str> {
-    ["/usr/bin/fusermount3", "/bin/fusermount3", "/usr/bin/fusermount"]
-        .into_iter()
-        .find(|p| Path::new(p).exists())
+    [
+        "/usr/bin/fusermount3",
+        "/bin/fusermount3",
+        "/usr/bin/fusermount",
+    ]
+    .into_iter()
+    .find(|p| Path::new(p).exists())
 }
 
 /// A directory to mount on, cleaned up however the test ends.
@@ -187,5 +191,8 @@ fn asking_for_a_writable_mount_stops_the_mount() {
         .unwrap();
     assert!(!out.status.success());
     let message = String::from_utf8_lossy(&out.stderr);
-    assert!(message.contains("read-only"), "unexpected message: {message}");
+    assert!(
+        message.contains("read-only"),
+        "unexpected message: {message}"
+    );
 }
