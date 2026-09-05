@@ -1,12 +1,13 @@
 //! Mounts a zip archive as a read-only filesystem.
 
+mod cli;
+
 use fuser::{MountOption, Session, SessionACL};
 use log::{Level, LevelFilter, Log, Metadata, Record};
 use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::time::Duration;
 use zipfs::{Archive, Config, ZipFs};
 
 // Avoid the default musl allocator under concurrent allocation workloads.
@@ -15,33 +16,39 @@ use zipfs::{Archive, Config, ZipFs};
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-const USAGE: &str = "\
+const USAGE_HEAD: &str = "\
 zipfs - mount a zip archive as a read-only filesystem
 
 Usage: zipfs [OPTIONS] <ARCHIVE> <MOUNTPOINT>
 
 Options:
-      --threads N               FUSE worker threads [default: cores, up to 8]
-      --no-verify               skip the CRC32 check on entries that are read
-                                to the end
-      --source-buffer-size N    compressed bytes each decoder buffers
-                                [default: 524288]
-      --decoders-per-file N     idle decoders one open file may keep [default: 4]
-      --max-retained-decoders N idle decoders the mount may keep [default: 64]
-      --uid ID                  owner reported for every file [default: caller]
-      --gid ID                  group reported for every file [default: caller]
-      --file-mode MODE          permissions for files whose entry records none
-                                [default: 644]
-      --dir-mode MODE           permissions for directories whose entry records
-                                none [default: 755]
-      --attr-ttl SECS           how long the kernel may cache metadata
-                                [default: 31536000]
-      --allow-other             let other users see the mount
-      --auto-unmount            unmount if this process dies; needs --allow-other
+";
+
+// This literal starts on the quote's own line: a backslash before the newline
+// would take the indent of the first option with it.
+const USAGE_TAIL: &str = "  -o OPT[,OPT...]               any option above, without the dashes, as
+                                mount(8) and fstab spell it
+  -f, --foreground              stay in the foreground and keep logging to
+                                standard error
+  -s                            serve with one thread, the same as --threads 1
   -v, --verbose                 log more; repeat for debug and trace
   -h, --help                    print this help
   -V, --version                 print the version
+
+Without --foreground the process forks once the mount is ready and the first
+process exits, so a script can mount and then read without waiting.
+
+Started under a name that begins with 'mount.', as mount(8) starts a helper,
+the short options take their mount(8) meanings instead: -s tolerates unknown
+options, -f does everything but the mount, -n is accepted and does nothing,
+and -t names the type. Use --foreground and --threads to reach what -f and -s
+mean otherwise.
 ";
+
+/// The help, with the settings written out from the one list of them.
+fn usage() -> String {
+    format!("{USAGE_HEAD}{}{USAGE_TAIL}", cli::settings_help())
+}
 
 /// Writes log records to standard error.
 struct Stderr;
@@ -105,6 +112,10 @@ struct Args {
     mountpoint: PathBuf,
     config: Config,
     verbosity: u8,
+    foreground: bool,
+    /// Do everything except the mount itself, which is what `mount -f` asks
+    /// a helper for.
+    fake: bool,
 }
 
 fn parse() -> Result<Option<Args>, lexopt::Error> {
@@ -114,33 +125,57 @@ fn parse() -> Result<Option<Args>, lexopt::Error> {
     let mut mountpoint = None;
     let mut config = Config::default();
     let mut verbosity = 0u8;
-    let mut auto_unmount = false;
+    let mut foreground = false;
+    let mut fake = false;
+    // mount(8) starts a helper as `mount.<type> spec dir [-sfnv] [-N ns]
+    // [-o opts] [-t type]`, where -s, -f and -n mean something other than what
+    // they mean here. Which set applies depends on the name this was started
+    // under, the way other mount helpers decide it.
+    let helper = started_as_mount_helper();
     let mut parser = lexopt::Parser::from_env();
 
     while let Some(arg) = parser.next()? {
         match arg {
-            Long("threads") => config.threads = parser.value()?.parse()?,
-            Long("no-verify") => config.verify = false,
-            Long("source-buffer-size") => config.source_buffer = parser.value()?.parse()?,
-            Long("decoders-per-file") => config.decoders_per_file = parser.value()?.parse()?,
-            Long("max-retained-decoders") => {
-                config.max_retained_decoders = parser.value()?.parse()?;
+            // The option list from mount(8) is applied where it appears, so a
+            // long option after it still wins.
+            Short('o') => {
+                cli::apply(&mut config, &parser.value()?).map_err(lexopt::Error::from)?;
             }
-            Long("uid") => config.uid = parser.value()?.parse()?,
-            Long("gid") => config.gid = parser.value()?.parse()?,
-            Long("file-mode") => config.file_mode = parse_mode(&parser.value()?)?,
-            Long("dir-mode") => config.dir_mode = parse_mode(&parser.value()?)?,
-            Long("attr-ttl") => config.attr_ttl = Duration::from_secs(parser.value()?.parse()?),
-            Long("allow-other") => config.allow_other = true,
-            Long("auto-unmount") => auto_unmount = true,
+            // Everything but the mount, so the caller learns whether the
+            // archive and the mount point are fit for one.
+            Short('f') if helper => fake = true,
+            Short('f') | Long("foreground") => foreground = true,
+            // -s is sloppy, which an option list is here in any case, and
+            // -n asks for the mount table to be left alone, which mount(8)
+            // never gives this program a part in.
+            Short('s' | 'n') if helper => {}
+            Short('s') => config.threads = 1,
+            // The type is what started this program, so there is nothing left
+            // to learn from it.
+            Short('t') if helper => {
+                parser.value()?;
+            }
+            Short('N') if helper => {
+                return Err(lexopt::Error::from(String::from(
+                    "mounting into another namespace is not supported",
+                )));
+            }
             Short('v') | Long("verbose") => verbosity = verbosity.saturating_add(1),
             Short('h') | Long("help") => {
-                print!("{USAGE}");
+                print!("{}", usage());
                 return Ok(None);
             }
             Short('V') | Long("version") => {
                 println!("zipfs {}", env!("CARGO_PKG_VERSION"));
                 return Ok(None);
+            }
+            // Every setting is named in one place, and this is where a long
+            // option reaches it.
+            Long(name) => {
+                let Some(setting) = cli::find(name) else {
+                    return Err(lexopt::Error::from(format!("invalid option '--{name}'")));
+                };
+                cli::apply_long(setting, &mut config, &mut parser)?;
             }
             Value(v) if archive.is_none() => archive = Some(PathBuf::from(v)),
             Value(v) if mountpoint.is_none() => mountpoint = Some(PathBuf::from(v)),
@@ -148,7 +183,6 @@ fn parse() -> Result<Option<Args>, lexopt::Error> {
         }
     }
 
-    config.auto_unmount = auto_unmount;
     let (Some(archive), Some(mountpoint)) = (archive, mountpoint) else {
         return Err(lexopt::Error::MissingValue {
             option: Some("ARCHIVE and MOUNTPOINT".into()),
@@ -159,34 +193,60 @@ fn parse() -> Result<Option<Args>, lexopt::Error> {
         mountpoint,
         config,
         verbosity,
+        foreground,
+        fake,
     }))
 }
 
-fn parse_mode(value: &std::ffi::OsString) -> Result<u16, lexopt::Error> {
-    let text = value.to_string_lossy();
-    u16::from_str_radix(text.trim_start_matches("0o"), 8).map_err(|error| {
-        lexopt::Error::ParsingFailed {
-            value: text.into_owned(),
-            error: std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("expected an octal mode such as 644: {error}"),
-            )
-            .into(),
-        }
-    })
+/// Reports whether a mount can be put here.
+fn check_mountpoint(mountpoint: &std::path::Path) -> std::io::Result<()> {
+    match fs::metadata(mountpoint) {
+        Ok(metadata) if metadata.is_dir() => Ok(()),
+        Ok(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("mount point '{}' is not a directory", mountpoint.display()),
+        )),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(std::io::Error::new(
+            e.kind(),
+            format!(
+                "mount point '{}' does not exist; create it first",
+                mountpoint.display()
+            ),
+        )),
+        Err(e) => Err(std::io::Error::new(
+            e.kind(),
+            format!("cannot access mount point '{}': {e}", mountpoint.display()),
+        )),
+    }
+}
+
+/// Whether mount(8) started this program as a helper.
+///
+/// A helper is reached through a name such as `mount.fuse.zipfs`, and mount(8)
+/// gives it the full path in the first argument.
+fn started_as_mount_helper() -> bool {
+    std::env::args_os()
+        .next()
+        .map(PathBuf::from)
+        .as_deref()
+        .and_then(std::path::Path::file_name)
+        .is_some_and(|name| name.as_encoded_bytes().starts_with(b"mount."))
 }
 
 fn main() -> ExitCode {
+    // Parsing an option list can have something to say about it, so the logger
+    // goes in first and the level it was asked for follows.
+    let _ = log::set_logger(&LOGGER);
+    log::set_max_level(LevelFilter::Warn);
     let args = match parse() {
         Ok(Some(args)) => args,
         Ok(None) => return ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("zipfs: {e}\n\n{USAGE}");
+            eprintln!("zipfs: {e}\n\n{}", usage());
             return ExitCode::FAILURE;
         }
     };
 
-    let _ = log::set_logger(&LOGGER);
     log::set_max_level(match args.verbosity {
         0 => LevelFilter::Warn,
         1 => LevelFilter::Info,
@@ -204,37 +264,13 @@ fn main() -> ExitCode {
 }
 
 fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
-    if args.config.auto_unmount && !args.config.allow_other {
+    if args.config.auto_unmount && !args.config.allow_other && !args.config.allow_root {
         // FUSE will not accept the combination, so say why rather than let the
         // mount fail with the kernel's wording.
-        return Err("--auto-unmount needs --allow-other".into());
+        return Err("--auto-unmount needs --allow-other or --allow-root".into());
     }
 
-    let mountpoint = match fs::metadata(&args.mountpoint) {
-        Ok(metadata) if metadata.is_dir() => Ok(()),
-        Ok(_) => Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!(
-                "mount point '{}' is not a directory",
-                args.mountpoint.display()
-            ),
-        )),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(std::io::Error::new(
-            e.kind(),
-            format!(
-                "mount point '{}' does not exist; create it first",
-                args.mountpoint.display()
-            ),
-        )),
-        Err(e) => Err(std::io::Error::new(
-            e.kind(),
-            format!(
-                "cannot access mount point '{}': {e}",
-                args.mountpoint.display()
-            ),
-        )),
-    };
-    mountpoint.map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+    check_mountpoint(&args.mountpoint).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
 
     let archive = Archive::open(&args.archive).map_err(|e| {
         ContextError::new(
@@ -250,6 +286,17 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     })?;
     let config = fs.config().clone();
     report(fs.stats());
+
+    if args.fake {
+        // The archive is open and indexed and the mount point has been
+        // checked, which is as far as a dry run goes.
+        log::info!(
+            "'{}' can be mounted at '{}'",
+            args.archive.display(),
+            args.mountpoint.display()
+        );
+        return Ok(());
+    }
 
     let mut options = vec![
         MountOption::RO,
@@ -270,6 +317,8 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     // `auto_unmount` needs it to be more than the owner.
     session_config.acl = if config.allow_other {
         SessionACL::All
+    } else if config.allow_root {
+        SessionACL::RootAndOwner
     } else {
         SessionACL::Owner
     };
@@ -294,6 +343,22 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             e,
         )
     })?;
+    // The mount answered the kernel's init request inside `Session::new`, so
+    // it is ready to serve. Detaching here, and no earlier, is what lets the
+    // caller treat this process leaving as the mount being usable.
+    if !args.foreground {
+        match daemonize() {
+            Ok(()) => {}
+            Err(DetachError::Local(e)) => {
+                return Err(ContextError::new("cannot detach from the terminal", e).into());
+            }
+            // The first process has already told the caller and left with a
+            // failing code. Nothing waits on this one, so all that is left is
+            // to drop the session, which takes the mount with it.
+            Err(DetachError::Reported) => return Ok(()),
+        }
+    }
+
     session.run().map_err(|e| {
         ContextError::new(
             format!(
@@ -303,6 +368,173 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             e,
         )
     })?;
+    Ok(())
+}
+
+/// The byte the child sends once the mount is its own to serve.
+const READY: u8 = 0;
+
+/// Why a mount is still in the foreground.
+#[derive(Debug)]
+enum DetachError {
+    /// The fork never happened, so this process is the only one there is and
+    /// the caller has heard nothing yet.
+    Local(std::io::Error),
+    /// The child could not detach and said so down the pipe. The first process
+    /// reported it, so saying it again would only repeat it.
+    Reported,
+}
+
+/// Forks, leaving the child to serve the mount.
+///
+/// The two processes are joined by a pipe so that the exit code the caller sees
+/// is the child's verdict, not a guess made before the child had one. The child
+/// sends [`READY`] when it has detached and is about to serve, or the reason it
+/// could not, and the first process reports that and leaves with a failing
+/// code. Closing the pipe without a word says the child died, which is a
+/// failure too. Without this the caller would be told the mount succeeded while
+/// the child was still able to fail, and by then its standard error is
+/// `/dev/null` and the message is gone.
+///
+/// The fork happens while this process still has one thread. The FUSE workers
+/// start later, inside `Session::run`, so the child gets an address space that
+/// no other thread was in the middle of changing. Where `--auto-unmount` is in
+/// use, the socket to `fusermount3` is an ordinary descriptor that the child
+/// inherits, so the unmount still follows the process that serves the mount.
+fn daemonize() -> Result<(), DetachError> {
+    let mut fds: [libc::c_int; 2] = [0; 2];
+    // SAFETY: `pipe` fills the two element array it is given.
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } < 0 {
+        return Err(DetachError::Local(std::io::Error::last_os_error()));
+    }
+    let [read_fd, write_fd] = fds;
+    // SAFETY: `fork` has no preconditions.
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        let error = std::io::Error::last_os_error();
+        // SAFETY: both descriptors are open and neither is used again.
+        unsafe {
+            libc::close(read_fd);
+            libc::close(write_fd);
+        };
+        return Err(DetachError::Local(error));
+    }
+    if pid > 0 {
+        // SAFETY: the write end belongs to the child from here on.
+        unsafe { libc::close(write_fd) };
+        await_child(read_fd);
+    }
+    // SAFETY: the read end belongs to the parent, which is another process.
+    unsafe { libc::close(read_fd) };
+    let detached = detach();
+    match &detached {
+        Ok(()) => send(write_fd, &[READY]),
+        Err(error) => send(write_fd, error.to_string().as_bytes()),
+    }
+    // SAFETY: the write end is open and is not used again. Closing it is what
+    // tells the parent that nothing more is coming.
+    unsafe { libc::close(write_fd) };
+    // The message went down the pipe, so the error itself has nowhere left to
+    // go: this process no longer has a standard error the caller can see.
+    detached.map_err(|_sent| DetachError::Reported)
+}
+
+/// Reports what the child had to say and ends the first process.
+///
+/// This never returns, and it leaves through `_exit`: a normal return would
+/// drop the session, and dropping it unmounts what the child is serving.
+fn await_child(read_fd: libc::c_int) -> ! {
+    let mut message = Vec::new();
+    let mut buf = [0u8; 256];
+    loop {
+        // SAFETY: the pointer and length describe `buf`.
+        let read = unsafe { libc::read(read_fd, buf.as_mut_ptr().cast(), buf.len()) };
+        let Ok(read) = usize::try_from(read) else {
+            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            break;
+        };
+        if read == 0 {
+            break;
+        }
+        if message.is_empty() && buf[0] == READY {
+            // SAFETY: `_exit` ends the process and has no preconditions.
+            unsafe { libc::_exit(0) };
+        }
+        message.extend_from_slice(&buf[..read]);
+    }
+    if message.is_empty() {
+        eprintln!("zipfs: the process serving the mount stopped before it was ready");
+    } else {
+        eprintln!("zipfs: {}", String::from_utf8_lossy(&message));
+    }
+    // SAFETY: `_exit` ends the process and has no preconditions.
+    unsafe { libc::_exit(1) };
+}
+
+/// Sends the parent everything it needs, as far as it gets.
+///
+/// A short write here costs a diagnostic, so there is nothing to gain by
+/// reporting one: the caller learns of the failure from the exit code, which
+/// closing the pipe delivers on its own.
+fn send(fd: libc::c_int, mut bytes: &[u8]) {
+    while !bytes.is_empty() {
+        // SAFETY: the pointer and length describe `bytes`.
+        let written = unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) };
+        let Ok(written) = usize::try_from(written) else {
+            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return;
+        };
+        if written == 0 {
+            return;
+        }
+        bytes = &bytes[written..];
+    }
+}
+
+/// Leaves the terminal behind, in the child.
+fn detach() -> std::io::Result<()> {
+    // SAFETY: `setsid` has no preconditions. It fails only when this process
+    // already leads a group, which the child of a fork never does.
+    if unsafe { libc::setsid() } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // Holding the caller's directory would keep it busy for the life of the
+    // mount. The mount point itself is safe: fuser resolves it before this.
+    // SAFETY: the argument is a NUL terminated string that lives for the call.
+    if unsafe { libc::chdir(c"/".as_ptr()) } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    redirect_standard_streams()
+}
+
+/// Points the standard streams at `/dev/null`.
+///
+/// A daemon that kept them would write over whatever the caller does next, and
+/// would hold the terminal open. Logs are lost from here on, which is what
+/// `--foreground` is for.
+fn redirect_standard_streams() -> std::io::Result<()> {
+    // SAFETY: the path is a NUL terminated string that lives for the call.
+    let null = unsafe { libc::open(c"/dev/null".as_ptr(), libc::O_RDWR) };
+    if null < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    for target in [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO] {
+        // SAFETY: `null` is open and the targets are the standard descriptors.
+        if unsafe { libc::dup2(null, target) } < 0 {
+            let error = std::io::Error::last_os_error();
+            // SAFETY: `null` is open and is not used again.
+            unsafe { libc::close(null) };
+            return Err(error);
+        }
+    }
+    if null > libc::STDERR_FILENO {
+        // SAFETY: `null` is open and every use of it has finished.
+        unsafe { libc::close(null) };
+    }
     Ok(())
 }
 

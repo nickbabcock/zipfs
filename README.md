@@ -29,3 +29,8 @@ fixed, which is what lets the kernel cache pages and metadata indefinitely.
   skipped, and the count is reported at mount.
 - Where two entries claim one path, the first is kept. Where one path is a file
   and another makes it a directory, the directory is kept.
+- Recommended to symlink zipfs as `/sbin/mount.fuse.zipfs` to work with `mount` and `fstab`:
+
+  ```sh
+  mount -t fuse.zipfs archive.zip /mnt/archive
+  ```

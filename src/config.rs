@@ -18,6 +18,10 @@ pub const MAX_IO: u32 = 1024 * 1024;
 
 /// How the filesystem behaves for the lifetime of a mount.
 #[derive(Debug, Clone)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "These are independent switches, each of which a mount option sets."
+)]
 pub struct Config {
     /// Check every fully read entry against its CRC32.
     pub verify: bool,
@@ -43,6 +47,10 @@ pub struct Config {
     pub attr_ttl: Duration,
     /// Let other users see the mount.
     pub allow_other: bool,
+    /// Let root see the mount.
+    ///
+    /// This is weaker than `allow_other` and is ignored when that is set.
+    pub allow_root: bool,
     /// Unmount if the process dies.
     ///
     /// FUSE refuses this unless the mount is visible to more than its owner,
@@ -71,6 +79,7 @@ impl Default for Config {
             dir_mode: 0o755,
             attr_ttl: Duration::from_secs(31_536_000),
             allow_other: false,
+            allow_root: false,
             auto_unmount: false,
         }
     }
