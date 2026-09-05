@@ -460,11 +460,13 @@ impl fuser::Filesystem for ZipFs {
             return;
         }
         let first = u64::from(node.first_child);
-        for (i, child) in self.index.children(node).iter().enumerate() {
+        // Cursors are dense, so the offset says which child comes next. Start
+        // there instead of walking the children before it.
+        let start = usize::try_from(offset.saturating_sub(2)).unwrap_or(usize::MAX);
+        let children = self.index.children(node);
+        for (i, child) in children.get(start..).unwrap_or_default().iter().enumerate() {
+            let i = start + i;
             let cursor = 3 + i as u64;
-            if cursor <= offset {
-                continue;
-            }
             let kind = match child.kind {
                 NodeKind::Dir => FileType::Directory,
                 NodeKind::File => FileType::RegularFile,
@@ -515,11 +517,11 @@ impl fuser::Filesystem for ZipFs {
             }
         }
         let first = u64::from(node.first_child);
-        for (i, child) in self.index.children(node).iter().enumerate() {
+        let start = usize::try_from(offset.saturating_sub(2)).unwrap_or(usize::MAX);
+        let children = self.index.children(node);
+        for (i, child) in children.get(start..).unwrap_or_default().iter().enumerate() {
+            let i = start + i;
             let cursor = 3 + i as u64;
-            if cursor <= offset {
-                continue;
-            }
             let child_ino = first + i as u64;
             let attr = file_attr(&self.index, child_ino, child, &self.config);
             let name = OsStr::from_bytes(self.index.name(child));
