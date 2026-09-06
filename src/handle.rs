@@ -4,7 +4,7 @@ use crate::decode::EntryLocation;
 use crate::hash::IdentityBuildHasher;
 use crate::index::{EntryMeta, Index, VERIFY_BAD, VERIFY_OK};
 use crate::pool::{DecoderBudget, EntryPool};
-use flate2::Crc;
+use crc32fast::Hasher as Crc;
 use rawzip::FileReader;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -50,7 +50,7 @@ impl StoreVerify {
             return true;
         }
         self.disabled = true;
-        let matches = self.crc.sum() == meta.crc32;
+        let matches = self.crc.clone().finalize() == meta.crc32;
         meta.set_verify_state(if matches { VERIFY_OK } else { VERIFY_BAD });
         matches
     }

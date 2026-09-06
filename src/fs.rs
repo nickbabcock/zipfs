@@ -11,7 +11,7 @@ use crate::decode::EntryLocation;
 use crate::handle::{HandleTable, OpenFile, OpenKind};
 use crate::index::{BuildStats, EntryMeta, Index, MAX_SYMLINK, Method, NodeKind, VERIFY_BAD};
 use crate::pool::{DecoderBudget, EntryPool};
-use flate2::Crc;
+use crc32fast::Hasher as Crc;
 use fuser::{
     Errno, FileAttr, FileHandle, FileType, FopenFlags, Generation, INodeNo, InitFlags,
     KernelConfig, LockOwner, OpenAccMode, OpenFlags, Request,
@@ -189,7 +189,7 @@ impl ZipFs {
         }
         let mut crc = Crc::new();
         crc.update(data);
-        let matches = crc.sum() == meta.crc32;
+        let matches = crc.finalize() == meta.crc32;
         meta.set_verify_state(if matches {
             crate::index::VERIFY_OK
         } else {

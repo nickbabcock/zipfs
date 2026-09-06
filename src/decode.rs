@@ -10,7 +10,7 @@ use crate::codec::{Codec, Decompressor};
 use crate::config::SKIP_BUFFER;
 use crate::index::{EntryMeta, Method, VERIFY_BAD, VERIFY_OK};
 use crate::source::BufSource;
-use flate2::Crc;
+use crc32fast::Hasher as Crc;
 use rawzip::FileReader;
 use std::io;
 use std::sync::Arc;
@@ -100,7 +100,7 @@ impl PositionedDecoder {
         self.finished = false;
         self.verified = false;
         if let Some(crc) = &mut self.crc {
-            *crc = Crc::new();
+            crc.reset();
         }
     }
 
@@ -192,7 +192,7 @@ impl PositionedDecoder {
         let Some(crc) = &self.crc else {
             return Ok(());
         };
-        let sum = crc.sum();
+        let sum = crc.clone().finalize();
 
         // A stream that keeps going past its declared size is as wrong as one
         // that stops early, so look for one more byte before accepting it.

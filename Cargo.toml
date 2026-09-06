@@ -61,10 +61,10 @@ multiple_crate_versions = "allow"
 # so no libfuse C headers are necessary.
 fuser = { version = "0.18", default-features = false }
 rawzip = "0.5"
-# The zlib-rs backend is pure Rust, gives the fastest inflate flate2 offers, and
-# supplies the SIMD Crc that entry verification uses.
+# The zlib-rs backend is pure Rust and gives the fastest inflate flate2 offers.
 flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
 zstd = { version = "0.14", default-features = false, optional = true }
+crc32fast = "1.5"
 lexopt = "0.3"
 libc = "0.2"
 log = "0.4"
