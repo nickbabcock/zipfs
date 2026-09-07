@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.2 - 2026-09-07
 
 ### Added
 
@@ -8,7 +8,7 @@
 - Builds for `aarch64`
 - A `zipfs(1)` manual page.
 
-## [0.1.1] - 2026-09-05
+## 0.1.1 - 2026-09-05
 
 ### Added
 
