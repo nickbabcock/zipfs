@@ -21,12 +21,21 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - run: cargo test --locked --all-features
+      - name: Check the manual page
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes man-db
+          warnings=$(man --warnings -E UTF-8 -l man/zipfs.1 2>&1 >/dev/null)
+          if [ -n "$warnings" ]; then
+            echo "$warnings" >&2
+            exit 1
+          fi
 
   build:
     name: Build ${{ matrix.target }}
     if: github.event_name == 'push'
     needs: check
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
     strategy:
@@ -35,15 +44,25 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             platform: linux-x86_64-gnu
+            runner: ubuntu-24.04
           - target: x86_64-unknown-linux-musl
             platform: linux-x86_64-musl
+            runner: ubuntu-24.04
+            deb: amd64
+          - target: aarch64-unknown-linux-gnu
+            platform: linux-aarch64-gnu
+            runner: ubuntu-24.04-arm
+          - target: aarch64-unknown-linux-musl
+            platform: linux-aarch64-musl
+            runner: ubuntu-24.04-arm
+            deb: arm64
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
       - name: Install musl tools
-        if: matrix.target == 'x86_64-unknown-linux-musl'
+        if: endsWith(matrix.target, '-musl')
         run: sudo apt-get update && sudo apt-get install --yes musl-tools
       - run: cargo build --locked --release --target ${{ matrix.target }} --bin zipfs
       - name: Package distribution
@@ -55,12 +74,37 @@ jobs:
           package="zipfs-${IDENTIFIER}-${PLATFORM}"
           mkdir -p "dist/${package}"
           install -m 0755 "target/${TARGET}/release/zipfs" "dist/${package}/zipfs"
+          install -m 0644 man/zipfs.1 "dist/${package}/zipfs.1"
+          install -m 0644 packaging/mnt-archive.mount "dist/${package}/mnt-archive.mount"
+          install -m 0644 LICENSE.txt README.md "dist/${package}/"
           tar -C dist -czf "dist/${package}.tar.gz" "${package}"
+          rm -rf "dist/${package}"
           (cd dist && sha256sum "${package}.tar.gz" > "${package}.tar.gz.sha256")
+      - name: Build the Debian package
+        if: matrix.deb
+        env:
+          TARGET: ${{ matrix.target }}
+          DEB_ARCH: ${{ matrix.deb }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            version=${GITHUB_REF_NAME#v}
+          else
+            version=$(sed -n '/^\[package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+            version="${version}~git$(git rev-parse --short=7 HEAD)"
+          fi
+          deb=$(packaging/build-deb.sh \
+            "target/${TARGET}/release/zipfs" "$DEB_ARCH" "$version" dist)
+          (cd dist && sha256sum "$(basename "$deb")" > "$(basename "$deb").sha256")
+          # An unreadable package is worse than no package, so prove that dpkg
+          # reads this one and that the mount helper is where it should be.
+          dpkg-deb --info "$deb"
+          dpkg-deb --contents "$deb" | grep -q 'usr/sbin/mount.fuse.zipfs'
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ startsWith(github.ref, 'refs/tags/v') && 'release' || format('nightly-{0}', github.sha) }}-${{ matrix.platform }}
-          path: dist/*.tar.gz*
+          path: |
+            dist/*.tar.gz*
+            dist/*.deb*
           if-no-files-found: error
           retention-days: 30
 
@@ -71,12 +115,27 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
     steps:
       - uses: actions/download-artifact@v8
         with:
           path: dist
           pattern: release-*
           merge-multiple: true
+      - uses: sigstore/cosign-installer@v3
+      - name: Sign the release artifacts
+        run: |
+          # A name that matches nothing must not reach cosign as itself.
+          shopt -s nullglob
+          files=(dist/*.tar.gz dist/*.deb)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo 'there is nothing to sign' >&2
+            exit 1
+          fi
+          for file in "${files[@]}"; do
+            cosign sign-blob --yes --new-bundle-format \
+              --bundle "${file}.sigstore.json" "$file"
+          done
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

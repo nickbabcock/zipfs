@@ -30,8 +30,9 @@ pub struct Setting {
     pub alias: Option<&'static str>,
     /// What the value is called in the help, or `None` for a flag.
     pub metavar: Option<&'static str>,
-    /// What it does, a line at a time.
-    pub help: &'static [&'static str],
+    /// What it does, as one sentence. The renderers break it into lines:
+    /// writing it broken would make each of them undo the other's work.
+    pub help: &'static str,
     /// How to put it into the configuration.
     pub apply: Apply,
 }
@@ -42,7 +43,7 @@ pub const SETTINGS: &[Setting] = &[
         name: "threads",
         alias: None,
         metavar: Some("N"),
-        help: &["FUSE worker threads [default: cores, up to 8]"],
+        help: "FUSE worker threads [default: cores, up to 8]",
         apply: Apply::Value(|c, v| {
             c.threads = number(v)?;
             Ok(())
@@ -52,24 +53,21 @@ pub const SETTINGS: &[Setting] = &[
         name: "no-verify",
         alias: Some("noverify"),
         metavar: None,
-        help: &[
-            "skip the CRC32 check on entries that are read",
-            "to the end",
-        ],
+        help: "skip the CRC32 check on entries that are read to the end",
         apply: Apply::Flag(|c| c.verify = false),
     },
     Setting {
         name: "verify",
         alias: None,
         metavar: None,
-        help: &["check entries against their CRC32 [default]"],
+        help: "check entries against their CRC32 [default]",
         apply: Apply::Flag(|c| c.verify = true),
     },
     Setting {
         name: "source-buffer-size",
         alias: None,
         metavar: Some("N"),
-        help: &["compressed bytes each decoder buffers", "[default: 524288]"],
+        help: "compressed bytes each decoder buffers [default: 524288]",
         apply: Apply::Value(|c, v| {
             c.source_buffer = number(v)?;
             Ok(())
@@ -79,7 +77,7 @@ pub const SETTINGS: &[Setting] = &[
         name: "decoders-per-file",
         alias: None,
         metavar: Some("N"),
-        help: &["idle decoders one open file may keep [default: 4]"],
+        help: "idle decoders one open file may keep [default: 4]",
         apply: Apply::Value(|c, v| {
             c.decoders_per_file = number(v)?;
             Ok(())
@@ -89,7 +87,7 @@ pub const SETTINGS: &[Setting] = &[
         name: "max-retained-decoders",
         alias: None,
         metavar: Some("N"),
-        help: &["idle decoders the mount may keep [default: 64]"],
+        help: "idle decoders the mount may keep [default: 64]",
         apply: Apply::Value(|c, v| {
             c.max_retained_decoders = number(v)?;
             Ok(())
@@ -99,7 +97,7 @@ pub const SETTINGS: &[Setting] = &[
         name: "uid",
         alias: None,
         metavar: Some("ID"),
-        help: &["owner reported for every file [default: caller]"],
+        help: "owner reported for every file [default: caller]",
         apply: Apply::Value(|c, v| {
             c.uid = number(v)?;
             Ok(())
@@ -109,7 +107,7 @@ pub const SETTINGS: &[Setting] = &[
         name: "gid",
         alias: None,
         metavar: Some("ID"),
-        help: &["group reported for every file [default: caller]"],
+        help: "group reported for every file [default: caller]",
         apply: Apply::Value(|c, v| {
             c.gid = number(v)?;
             Ok(())
@@ -119,10 +117,7 @@ pub const SETTINGS: &[Setting] = &[
         name: "file-mode",
         alias: None,
         metavar: Some("MODE"),
-        help: &[
-            "permissions for files whose entry records none",
-            "[default: 644]",
-        ],
+        help: "permissions for files whose entry records none [default: 644]",
         apply: Apply::Value(|c, v| {
             c.file_mode = mode(v)?;
             Ok(())
@@ -132,10 +127,7 @@ pub const SETTINGS: &[Setting] = &[
         name: "dir-mode",
         alias: None,
         metavar: Some("MODE"),
-        help: &[
-            "permissions for directories whose entry records",
-            "none [default: 755]",
-        ],
+        help: "permissions for directories whose entry records none [default: 755]",
         apply: Apply::Value(|c, v| {
             c.dir_mode = mode(v)?;
             Ok(())
@@ -147,7 +139,7 @@ pub const SETTINGS: &[Setting] = &[
         name: "umask",
         alias: None,
         metavar: Some("MASK"),
-        help: &["bits to take away from both modes above"],
+        help: "bits to take away from both modes above",
         apply: Apply::Value(|c, v| {
             let mask = mode(v)?;
             c.file_mode = 0o666 & !mask;
@@ -159,7 +151,7 @@ pub const SETTINGS: &[Setting] = &[
         name: "fmask",
         alias: None,
         metavar: Some("MASK"),
-        help: &["bits to take away from the file mode"],
+        help: "bits to take away from the file mode",
         apply: Apply::Value(|c, v| {
             c.file_mode = 0o666 & !mode(v)?;
             Ok(())
@@ -169,7 +161,7 @@ pub const SETTINGS: &[Setting] = &[
         name: "dmask",
         alias: None,
         metavar: Some("MASK"),
-        help: &["bits to take away from the directory mode"],
+        help: "bits to take away from the directory mode",
         apply: Apply::Value(|c, v| {
             c.dir_mode = 0o777 & !mode(v)?;
             Ok(())
@@ -179,10 +171,7 @@ pub const SETTINGS: &[Setting] = &[
         name: "attr-ttl",
         alias: None,
         metavar: Some("SECS"),
-        help: &[
-            "how long the kernel may cache metadata",
-            "[default: 31536000]",
-        ],
+        help: "how long the kernel may cache metadata [default: 31536000]",
         apply: Apply::Value(|c, v| {
             c.attr_ttl = Duration::from_secs(number(v)?);
             Ok(())
@@ -192,30 +181,30 @@ pub const SETTINGS: &[Setting] = &[
         name: "allow-other",
         alias: None,
         metavar: None,
-        help: &["let other users see the mount"],
+        help: "let other users see the mount",
         apply: Apply::Flag(|c| c.allow_other = true),
     },
     Setting {
         name: "allow-root",
         alias: None,
         metavar: None,
-        help: &["let root see the mount"],
+        help: "let root see the mount",
         apply: Apply::Flag(|c| c.allow_root = true),
     },
     Setting {
         name: "auto-unmount",
         alias: None,
         metavar: None,
-        help: &[
-            "unmount if this process dies; needs",
-            "--allow-other or --allow-root",
-        ],
+        help: "unmount if this process dies; needs --allow-other or --allow-root",
         apply: Apply::Flag(|c| c.auto_unmount = true),
     },
 ];
 
 /// The column the help text starts in.
 const HELP_COLUMN: usize = 32;
+
+/// The width the help is written to.
+const HELP_WIDTH: usize = 80;
 
 /// Finds the setting of this name, in either spelling.
 pub fn find(name: &str) -> Option<&'static Setting> {
@@ -259,6 +248,54 @@ pub fn apply_long(
     Ok(())
 }
 
+/// Breaks text into the pieces a line is allowed to end at.
+///
+/// A note in brackets, such as `[default: 4]`, is one piece. A line that
+/// stopped inside it would leave the name of the default on one line and the
+/// value on the next.
+fn pieces(text: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut rest = text.trim();
+    while !rest.is_empty() {
+        let end = if rest.starts_with('[') {
+            // An opening bracket with no closing one takes the rest, which
+            // keeps this from looking for a space it would not use.
+            rest.find(']').map_or(rest.len(), |at| at + 1)
+        } else {
+            rest.find(' ').unwrap_or(rest.len())
+        };
+        out.push(&rest[..end]);
+        rest = rest[end..].trim_start();
+    }
+    out
+}
+
+/// Breaks text into lines of at most `width`, at the spaces between words.
+///
+/// A piece longer than `width` takes a line of its own: cutting it in two
+/// would cost the reader more than the wide line does.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in pieces(text) {
+        if line.is_empty() {
+            line.push_str(word);
+        } else if line.len() + 1 + word.len() <= width {
+            line.push(' ');
+            line.push_str(word);
+        } else {
+            lines.push(std::mem::take(&mut line));
+            line.push_str(word);
+        }
+    }
+    // Text with nothing in it still owes a line, so that a setting keeps the
+    // line its name is on.
+    if !line.is_empty() || lines.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
 /// Renders the settings as the help lists them.
 pub fn settings_help() -> String {
     let mut out = String::new();
@@ -267,7 +304,10 @@ pub fn settings_help() -> String {
             Some(metavar) => format!("      --{} {metavar}", setting.name),
             None => format!("      --{}", setting.name),
         };
-        for (i, line) in setting.help.iter().enumerate() {
+        for (i, line) in wrap(setting.help, HELP_WIDTH - HELP_COLUMN)
+            .iter()
+            .enumerate()
+        {
             let start = if i == 0 { named.as_str() } else { "" };
             let _ = writeln!(out, "{start:<HELP_COLUMN$}{line}");
         }
@@ -453,6 +493,122 @@ mod tests {
             );
             assert!(help.contains(dashed), "'{dashed}' is missing from the help");
         }
+    }
+
+    #[test]
+    fn the_help_fits_the_width_and_keeps_a_bracketed_note_whole() {
+        for line in settings_help().lines() {
+            assert!(
+                line.len() <= HELP_WIDTH,
+                "this line is {} columns wide: {line:?}",
+                line.len()
+            );
+            // A '[' that never meets its ']' is a note that a line break got
+            // into, which is what `pieces` is there to stop.
+            assert_eq!(
+                line.matches('[').count(),
+                line.matches(']').count(),
+                "a bracketed note is split across lines: {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn wrapping_breaks_at_a_space_and_not_inside_a_note() {
+        assert_eq!(wrap("one two three", 7), ["one two", "three"]);
+        assert_eq!(wrap("keep [default: 4]", 12), ["keep", "[default: 4]"]);
+        // A piece of its own is left whole, however wide it is.
+        assert_eq!(wrap("[default: 31536000]", 4), ["[default: 31536000]"]);
+        // Text with nothing in it still owes the name a line.
+        assert_eq!(wrap("", 8), [""]);
+    }
+
+    /// Where the option list the manual page shows starts and stops.
+    ///
+    /// A roff comment opens with `.\"`, so these are invisible on the page.
+    const MAN_BEGIN: &str = ".\\\" BEGIN OPTIONS: written by cli.rs, not by hand\n";
+    const MAN_END: &str = ".\\\" END OPTIONS\n";
+
+    /// Escapes what roff would otherwise read as an instruction.
+    ///
+    /// A backslash starts an escape, and a dash has to say that it is a dash
+    /// and not the hyphen roff breaks a word with.
+    fn roff(text: &str) -> String {
+        // The backslash goes first: doing it after would take the backslash
+        // that the dash brings with it.
+        text.replace('\\', "\\e").replace('-', "\\-")
+    }
+
+    /// Makes the help of a setting into a sentence the page can carry.
+    fn sentence(help: &str) -> String {
+        let mut out = roff(help);
+        if let Some(first) = out.get(..1) {
+            out.replace_range(..1, &first.to_uppercase());
+        }
+        if !out.ends_with('.') {
+            out.push('.');
+        }
+        out
+    }
+
+    /// Renders the settings as the manual page lists them.
+    fn settings_roff() -> String {
+        let mut out = String::new();
+        for setting in SETTINGS {
+            out.push_str(".TP\n");
+            let name = roff(setting.name);
+            match setting.metavar {
+                // The quoted space is what parts the roman metavar from the
+                // bold name.
+                Some(metavar) => {
+                    let _ = writeln!(out, ".BI \\-\\-{name} \" {metavar}\"");
+                }
+                None => {
+                    let _ = writeln!(out, ".B \\-\\-{name}");
+                }
+            }
+            let mut text = sentence(setting.help);
+            if let Some(alias) = setting.alias {
+                let _ = write!(
+                    text,
+                    " The alias \\fB{}\\fR names the same thing.",
+                    roff(alias)
+                );
+            }
+            let _ = writeln!(out, "{text}");
+        }
+        out
+    }
+
+    /// The manual page carries the settings, and this is what writes them.
+    ///
+    /// Everything between the two markers comes from [`SETTINGS`], so a new
+    /// setting reaches the page the way it reaches the help. The prose around
+    /// the markers is written by hand and is left alone.
+    ///
+    /// Run `UPDATE_MAN=1 cargo test` to write the page after a setting
+    /// changes. CI leaves the variable unset, so a page left behind fails
+    /// there.
+    #[test]
+    fn the_manual_page_carries_every_setting() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/man/zipfs.1");
+        let page = std::fs::read_to_string(path).expect("the manual page is in the repository");
+        let (head, rest) = page
+            .split_once(MAN_BEGIN)
+            .expect("the page says where its options start");
+        let (_, tail) = rest
+            .split_once(MAN_END)
+            .expect("the page says where its options stop");
+        let wanted = format!("{head}{MAN_BEGIN}{}{MAN_END}{tail}", settings_roff());
+        if page == wanted {
+            return;
+        }
+        assert!(
+            std::env::var_os("UPDATE_MAN").is_some(),
+            "man/zipfs.1 is behind the settings; \
+             run 'UPDATE_MAN=1 cargo test' to write it"
+        );
+        std::fs::write(path, &wanted).expect("the manual page can be written");
     }
 
     #[test]
