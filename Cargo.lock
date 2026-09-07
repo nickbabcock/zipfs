@@ -488,7 +488,7 @@ dependencies = [
 
 [[package]]
 name = "zipfs"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "crc32fast",
  "flate2",
