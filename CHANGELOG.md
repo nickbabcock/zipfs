@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Debian packages for `amd64` and `arm64`
+- Builds for `aarch64`
+- A `zipfs(1)` manual page.
+
 ## [0.1.1] - 2026-09-05
 
 ### Added

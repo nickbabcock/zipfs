@@ -1,0 +1,29 @@
+# An example systemd mount unit for zipfs.
+#
+# The name of this file must agree with the mount point: /mnt/archive becomes
+# mnt-archive.mount. Copy it to /etc/systemd/system/, change What and Where,
+# then run:
+#
+#   systemctl daemon-reload
+#   systemctl start mnt-archive.mount
+#
+# The mount point directory must exist. systemd makes it if the unit is
+# started, but making it first does no harm.
+
+[Unit]
+Description=Zip archive at /mnt/archive
+Documentation=man:zipfs(1)
+
+[Mount]
+What=/srv/archive.zip
+Where=/mnt/archive
+Type=fuse.zipfs
+# Any option that zipfs --help lists can go here, without the dashes.
+# allow_other lets users other than root read the files. It needs
+# user_allow_other in /etc/fuse.conf.
+Options=ro,nosuid,nodev,allow_other,threads=4
+# The archive is a local file, so the mount can wait for its filesystem.
+LazyUnmount=no
+
+[Install]
+WantedBy=multi-user.target

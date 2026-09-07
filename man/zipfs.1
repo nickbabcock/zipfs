@@ -1,0 +1,236 @@
+.\" Manual page for zipfs.
+.\" The option list between the two markers below comes from SETTINGS in
+.\" src/cli.rs. Do not write in it by hand: run 'UPDATE_MAN=1 cargo test'
+.\" instead. A test writes the same thing and fails where this is behind.
+.\" The prose around the markers is written by hand.
+.TH ZIPFS 1 "2026-09-07" "zipfs" "User Commands"
+.SH NAME
+zipfs \- mount a zip archive as a read\-only filesystem
+.SH SYNOPSIS
+.B zipfs
+.RI [ OPTIONS ]
+.I ARCHIVE MOUNTPOINT
+.br
+.B mount \-t fuse.zipfs
+.RI [ \-o
+.IR OPT [, OPT ...]]
+.I ARCHIVE MOUNTPOINT
+.SH DESCRIPTION
+.B zipfs
+mounts the zip archive
+.I ARCHIVE
+at
+.I MOUNTPOINT
+through FUSE. The files in the archive are then read like any other files.
+Nothing is written to disk: each read decompresses only the bytes it needs,
+and the kernel keeps the pages it has already seen.
+.PP
+The mount is read\-only. Stored, deflate and zstd entries can be read.
+Entries that are encrypted, or that use another compression method, are
+counted at mount time and cannot be read.
+.PP
+The archive must not change while it is mounted. Its contents are treated as
+fixed, which is what lets the kernel cache pages and metadata indefinitely.
+.PP
+Without
+.B \-\-foreground
+the process forks when the mount is ready, and the first process exits. A
+script can therefore mount and then read, with no wait in between.
+.SH OPTIONS
+Each option below has two spellings: the long option shown here, and the same
+name without the dashes in an
+.B \-o
+list. A list accepts dashes or underscores in a name.
+.\" BEGIN OPTIONS: written by cli.rs, not by hand
+.TP
+.BI \-\-threads " N"
+FUSE worker threads [default: cores, up to 8].
+.TP
+.B \-\-no\-verify
+Skip the CRC32 check on entries that are read to the end. The alias \fBnoverify\fR names the same thing.
+.TP
+.B \-\-verify
+Check entries against their CRC32 [default].
+.TP
+.BI \-\-source\-buffer\-size " N"
+Compressed bytes each decoder buffers [default: 524288].
+.TP
+.BI \-\-decoders\-per\-file " N"
+Idle decoders one open file may keep [default: 4].
+.TP
+.BI \-\-max\-retained\-decoders " N"
+Idle decoders the mount may keep [default: 64].
+.TP
+.BI \-\-uid " ID"
+Owner reported for every file [default: caller].
+.TP
+.BI \-\-gid " ID"
+Group reported for every file [default: caller].
+.TP
+.BI \-\-file\-mode " MODE"
+Permissions for files whose entry records none [default: 644].
+.TP
+.BI \-\-dir\-mode " MODE"
+Permissions for directories whose entry records none [default: 755].
+.TP
+.BI \-\-umask " MASK"
+Bits to take away from both modes above.
+.TP
+.BI \-\-fmask " MASK"
+Bits to take away from the file mode.
+.TP
+.BI \-\-dmask " MASK"
+Bits to take away from the directory mode.
+.TP
+.BI \-\-attr\-ttl " SECS"
+How long the kernel may cache metadata [default: 31536000].
+.TP
+.B \-\-allow\-other
+Let other users see the mount.
+.TP
+.B \-\-allow\-root
+Let root see the mount.
+.TP
+.B \-\-auto\-unmount
+Unmount if this process dies; needs \-\-allow\-other or \-\-allow\-root.
+.\" END OPTIONS
+.TP
+.BI \-o " OPT" [, OPT ...]
+Any option above, without the dashes, as
+.BR mount (8)
+and
+.BR fstab (5)
+spell it. Options that belong to the kernel or to
+.BR mount (8),
+such as
+.BR ro " and " noatime ,
+are accepted and passed on.
+.TP
+.BR \-f ", " \-\-foreground
+Stay in the foreground and keep logging to standard error
+.TP
+.B \-s
+Serve with one thread, the same as
+.BR \-\-threads " 1"
+.TP
+.BR \-v ", " \-\-verbose
+Log more. Repeat for debug and trace.
+.TP
+.BR \-h ", " \-\-help
+Print the help
+.TP
+.BR \-V ", " \-\-version
+Print the version
+.SH MOUNT HELPER
+Installed as
+.IR /usr/sbin/mount.fuse.zipfs ,
+the program is what
+.BR mount (8)
+starts for the type
+.BR fuse.zipfs .
+An fstab line then reads:
+.PP
+.RS
+.EX
+/srv/data.zip  /mnt/data  fuse.zipfs  ro,noauto,allow_other  0 0
+.EE
+.RE
+.PP
+Started under a name that begins with
+.BR mount. ,
+the short options take their
+.BR mount (8)
+meanings instead:
+.B \-s
+tolerates unknown options,
+.B \-f
+does everything but the mount,
+.B \-n
+is accepted and does nothing, and
+.B \-t
+names the type. Use
+.B \-\-foreground
+and
+.B \-\-threads
+to reach what
+.B \-f
+and
+.B \-s
+mean otherwise.
+.SH EXAMPLES
+Mount an archive, read it, and unmount it:
+.PP
+.RS
+.EX
+zipfs archive.zip /mnt/archive
+ls /mnt/archive
+fusermount3 \-u /mnt/archive
+.EE
+.RE
+.PP
+Mount with 4 threads, and let other users read the files:
+.PP
+.RS
+.EX
+zipfs \-\-threads 4 \-\-allow\-other archive.zip /mnt/archive
+.EE
+.RE
+.PP
+A systemd mount unit. The name of the file must agree with the mount point:
+.I /mnt/archive
+becomes
+.IR mnt\-archive.mount .
+.PP
+.RS
+.EX
+[Unit]
+Description=Zip archive at /mnt/archive
+
+[Mount]
+What=/srv/archive.zip
+Where=/mnt/archive
+Type=fuse.zipfs
+Options=ro,nosuid,nodev,allow_other,threads=4
+
+[Install]
+WantedBy=multi\-user.target
+.EE
+.RE
+.PP
+Put the file in
+.IR /etc/systemd/system/ ,
+then:
+.PP
+.RS
+.EX
+systemctl daemon\-reload
+systemctl start mnt\-archive.mount
+.EE
+.RE
+.PP
+The package installs this example at
+.IR /usr/share/doc/zipfs/examples/mnt\-archive.mount .
+.SH EXIT STATUS
+.B zipfs
+exits with 0 when the mount is ready, and with 1 when it is not. Where the
+process forks, the code is the child's verdict: the first process waits until
+the child serves the mount, or reports why it cannot.
+.SH FILES
+.TP
+.I /usr/bin/zipfs
+The program.
+.TP
+.I /usr/sbin/mount.fuse.zipfs
+The name
+.BR mount (8)
+starts for the type
+.BR fuse.zipfs .
+.SH SEE ALSO
+.BR mount (8),
+.BR fstab (5),
+.BR fusermount3 (1),
+.BR systemd.mount (5)
+.SH BUGS
+Report bugs at
+.UR https://github.com/nickbabcock/zipfs/issues
+.UE .
