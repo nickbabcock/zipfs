@@ -47,6 +47,8 @@ fixed, which is what lets the kernel cache pages and metadata indefinitely.
 - Supported compression methods: stored, deflate and zstd.
 - Paths that are absolute, that contain `..`, or that hold a NUL byte are
   skipped, and the count is reported at mount.
+- Symbolic links are hidden by default. `--allow-symlinks` exposes them, but a
+  link target can point outside the mount.
 - Where two entries claim one path, the first is kept. Where one path is a file
   and another makes it a directory, the directory is kept.
 - The `.deb` installs `/usr/sbin/mount.fuse.zipfs`, which is what lets `mount`
