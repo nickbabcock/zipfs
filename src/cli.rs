@@ -64,6 +64,13 @@ pub const SETTINGS: &[Setting] = &[
         apply: Apply::Flag(|c| c.verify = true),
     },
     Setting {
+        name: "allow-symlinks",
+        alias: None,
+        metavar: None,
+        help: "expose archive symbolic links; targets can reach outside the mount",
+        apply: Apply::Flag(|c| c.allow_symlinks = true),
+    },
+    Setting {
         name: "source-buffer-size",
         alias: None,
         metavar: Some("N"),
@@ -616,7 +623,7 @@ mod tests {
         let mut from_list = Config::default();
         apply(
             &mut from_list,
-            &OsString::from("threads=3,attr-ttl=60,no-verify,umask=077"),
+            &OsString::from("threads=3,attr-ttl=60,no-verify,allow-symlinks,umask=077"),
         )
         .unwrap();
 
@@ -627,6 +634,7 @@ mod tests {
             "--attr-ttl",
             "60",
             "--no-verify",
+            "--allow-symlinks",
             "--umask",
             "077",
         ]);
@@ -641,6 +649,7 @@ mod tests {
         assert_eq!(from_list.threads, from_long.threads);
         assert_eq!(from_list.attr_ttl, from_long.attr_ttl);
         assert_eq!(from_list.verify, from_long.verify);
+        assert_eq!(from_list.allow_symlinks, from_long.allow_symlinks);
         assert_eq!(from_list.file_mode, from_long.file_mode);
         assert_eq!(from_list.dir_mode, from_long.dir_mode);
     }
@@ -651,6 +660,7 @@ mod tests {
         assert_eq!(config.threads, 3);
         assert_eq!(config.attr_ttl, Duration::from_secs(60));
         assert!(!config.verify);
+        assert!(!config.allow_symlinks);
         assert!(config.allow_other);
     }
 

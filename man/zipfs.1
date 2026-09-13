@@ -32,6 +32,10 @@ counted at mount time and cannot be read.
 The archive must not change while it is mounted. Its contents are treated as
 fixed, which is what lets the kernel cache pages and metadata indefinitely.
 .PP
+Symbolic links are hidden by default. Use
+.B \-\-allow\-symlinks
+to expose them. A link target can point outside the mount.
+.PP
 Without
 .B \-\-foreground
 the process forks when the mount is ready, and the first process exits. A
@@ -51,6 +55,9 @@ Skip the CRC32 check on entries that are read to the end. The alias \fBnoverify\
 .TP
 .B \-\-verify
 Check entries against their CRC32 [default].
+.TP
+.B \-\-allow\-symlinks
+Expose archive symbolic links; targets can reach outside the mount.
 .TP
 .BI \-\-source\-buffer\-size " N"
 Compressed bytes each decoder buffers [default: 524288].

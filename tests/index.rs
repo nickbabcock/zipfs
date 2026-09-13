@@ -6,13 +6,24 @@ use common::{Entry, TempArchive, archive};
 use rawzip::CompressionMethod;
 const STORE: CompressionMethod = CompressionMethod::STORE;
 const DEFLATE: CompressionMethod = CompressionMethod::DEFLATE;
-use zipfs::index::{NodeKind, ROOT_INO};
+use zipfs::index::{BuildOptions, NodeKind, ROOT_INO};
 use zipfs::{Archive, Index};
 
 fn index_of(name: &str, entries: &[Entry]) -> (TempArchive, Index, zipfs::index::BuildStats) {
     let temp = TempArchive::new(name, &archive(entries));
     let archive = Archive::open(&temp.path).unwrap();
     let (index, stats) = zipfs::index::build(&archive).unwrap();
+    (temp, index, stats)
+}
+
+fn index_of_with_options(
+    name: &str,
+    entries: &[Entry],
+    options: BuildOptions,
+) -> (TempArchive, Index, zipfs::index::BuildStats) {
+    let temp = TempArchive::new(name, &archive(entries));
+    let archive = Archive::open(&temp.path).unwrap();
+    let (index, stats) = Index::from_archive(&archive, options).unwrap();
     (temp, index, stats)
 }
 
@@ -237,8 +248,23 @@ fn a_name_that_is_not_text_survives_as_bytes() {
 }
 
 #[test]
-fn a_symlink_is_recognised_from_its_mode() {
-    let (_t, index, stats) = index_of("symlink", &[Entry::symlink("link", "target.txt")]);
+fn symlinks_are_hidden_by_default() {
+    let (_t, index, stats) = index_of("hidden-symlink", &[Entry::symlink("link", "target.txt")]);
+
+    assert!(resolve(&index, "link").is_none());
+    assert_eq!(stats.entries, 0);
+    assert_eq!(stats.symlinks, 1);
+}
+
+#[test]
+fn a_symlink_is_recognised_when_allowed() {
+    let (_t, index, stats) = index_of_with_options(
+        "symlink",
+        &[Entry::symlink("link", "target.txt")],
+        BuildOptions {
+            allow_symlinks: true,
+        },
+    );
 
     let ino = resolve(&index, "link").unwrap();
     assert_eq!(index.node(ino).unwrap().kind, NodeKind::Symlink);

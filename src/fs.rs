@@ -9,7 +9,9 @@ use crate::attr::file_attr;
 use crate::config::{Config, MAX_IO};
 use crate::decode::EntryLocation;
 use crate::handle::{HandleTable, OpenFile, OpenKind};
-use crate::index::{BuildStats, EntryMeta, Index, MAX_SYMLINK, Method, NodeKind, VERIFY_BAD};
+use crate::index::{
+    BuildOptions, BuildStats, EntryMeta, Index, MAX_SYMLINK, Method, NodeKind, VERIFY_BAD,
+};
 use crate::pool::{DecoderBudget, EntryPool};
 use crc32fast::Hasher as Crc;
 use fuser::{
@@ -78,7 +80,12 @@ impl ZipFs {
     /// Returns an error when the archive central directory cannot be read.
     pub fn new(archive: Archive, mut config: Config) -> crate::Result<ZipFs> {
         config.clamp();
-        let (index, stats) = crate::index::build(&archive)?;
+        let (index, stats) = Index::from_archive(
+            &archive,
+            BuildOptions {
+                allow_symlinks: config.allow_symlinks,
+            },
+        )?;
         Ok(ZipFs {
             reader: archive.reader(),
             budget: DecoderBudget::new(&config),

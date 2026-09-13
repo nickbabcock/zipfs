@@ -25,6 +25,8 @@ pub const MAX_IO: u32 = 1024 * 1024;
 pub struct Config {
     /// Check every fully read entry against its CRC32.
     pub verify: bool,
+    /// Expose symbolic links stored in the archive.
+    pub allow_symlinks: bool,
     /// Bytes of compressed data each decoder buffers.
     pub source_buffer: usize,
     /// Idle decoders one open file may keep.
@@ -65,6 +67,7 @@ impl Default for Config {
             .map_or(4, |n| n.min(8));
         Config {
             verify: true,
+            allow_symlinks: false,
             source_buffer: DEFAULT_SOURCE_BUFFER,
             decoders_per_file: 4,
             max_retained_decoders: 64,
