@@ -10,6 +10,7 @@
 mod build;
 mod intern;
 
+pub(crate) use build::show;
 pub use build::{BuildStats, build};
 
 use std::sync::OnceLock;
@@ -220,6 +221,33 @@ impl Index {
         self.total_uncompressed
     }
 
+    /// The directories above a node, from its parent up. The root is not
+    /// included.
+    fn ancestors(&self, node: &Node) -> impl Iterator<Item = &Node> {
+        let mut ino = u64::from(node.parent);
+        std::iter::from_fn(move || {
+            if ino == ROOT_INO {
+                return None;
+            }
+            let parent = self.node(ino)?;
+            ino = u64::from(parent.parent);
+            Some(parent)
+        })
+    }
+
+    /// The number of directories between a node and the root.
+    pub(crate) fn depth(&self, node: &Node) -> usize {
+        self.ancestors(node).count()
+    }
+
+    /// The path of a node from the root, for a log line.
+    pub(crate) fn path(&self, node: &Node) -> Vec<u8> {
+        let mut names = vec![self.name(node)];
+        names.extend(self.ancestors(node).map(|parent| self.name(parent)));
+        names.reverse();
+        names.join(&b'/')
+    }
+
     /// The cached target of a symlink, if it has been read.
     #[must_use]
     pub fn symlink(&self, slot: u32) -> Option<&[u8]> {
@@ -233,5 +261,124 @@ impl Index {
         let cell = self.symlinks.get(slot as usize)?;
         let _ = cell.set(target);
         cell.get().map(|t| &**t)
+    }
+}
+
+/// Tells if a symlink target is sure to stay inside the mount.
+///
+/// `depth` is the number of directories between the link and the root. The
+/// kernel starts a relative target at the real directory of the link, so this
+/// count is exact for each `..` that comes before all names.
+///
+/// A `..` after a name is refused. That name can be a symlink to a different
+/// directory, so the path does not show where the `..` goes. For example,
+/// `a/up -> ..` is the root, so `a/b/esc -> ../up/../..` goes above the root
+/// but looks contained if the path alone is resolved. If no `..` follows a
+/// name, each link stays inside the mount, whichever links its names go
+/// through.
+pub(crate) fn symlink_is_contained(target: &[u8], depth: usize) -> bool {
+    if target.is_empty() || target.starts_with(b"/") || target.contains(&0) {
+        return false;
+    }
+    let mut ascents = 0;
+    let mut after_name = false;
+    for component in target.split(|&b| b == b'/') {
+        match component {
+            b"" | b"." => {}
+            b".." => {
+                ascents += 1;
+                if after_name || ascents > depth {
+                    return false;
+                }
+            }
+            _ => after_name = true,
+        }
+    }
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Index, NO_META, Node, NodeKind, symlink_is_contained};
+
+    fn node(name_off: u32, name_len: u16, parent: u32) -> Node {
+        Node {
+            name_off,
+            name_len,
+            kind: NodeKind::Dir,
+            flags: 0,
+            parent,
+            first_child: 0,
+            child_len: 0,
+            subdir_count: 0,
+            meta: NO_META,
+        }
+    }
+
+    #[test]
+    fn a_node_knows_its_path_and_depth() {
+        let index = Index {
+            // Inode 0 does not exist, and inode 1 is the root.
+            nodes: Box::new([
+                node(0, 0, 0),
+                node(0, 0, 1),
+                node(0, 1, 1),
+                node(1, 1, 2),
+                node(2, 4, 3),
+            ]),
+            metas: Box::new([]),
+            names: Box::from(&b"ablink"[..]),
+            symlinks: Box::new([]),
+            total_uncompressed: 0,
+        };
+
+        let top = index.node(2).unwrap();
+        assert_eq!(index.path(top), b"a");
+        assert_eq!(index.depth(top), 0);
+
+        let deep = index.node(4).unwrap();
+        assert_eq!(index.path(deep), b"a/b/link");
+        assert_eq!(index.depth(deep), 2);
+    }
+
+    #[test]
+    fn a_target_that_stays_inside_the_mount_is_contained() {
+        for (target, depth) in [
+            ("target", 0),
+            ("sub/target", 0),
+            ("./target", 0),
+            ("sub//target/", 0),
+            (".", 0),
+            ("..", 1),
+            ("../target", 1),
+            ("./../target", 1),
+            ("../../sub/target", 2),
+            ("../../sub/target", 5),
+        ] {
+            assert!(
+                symlink_is_contained(target.as_bytes(), depth),
+                "{target} at depth {depth}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_target_that_can_leave_the_mount_is_not_contained() {
+        for (target, depth) in [
+            ("", 0),
+            ("/etc/passwd", 5),
+            ("..", 0),
+            ("../target", 0),
+            ("../../target", 1),
+            ("sub/..", 5),
+            ("sub/../target", 5),
+            ("../up/../..", 5),
+            ("a\0b", 5),
+        ] {
+            assert!(
+                !symlink_is_contained(target.as_bytes(), depth),
+                "{target} at depth {depth}"
+            );
+        }
     }
 }

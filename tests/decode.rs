@@ -8,7 +8,7 @@ use common::{
 };
 use rawzip::CompressionMethod;
 use std::sync::Arc;
-use zipfs::config::SKIP_BUFFER;
+use zipfs::config::{SKIP_BUFFER, Symlinks};
 use zipfs::decode::{CoreParts, EntryLocation, PositionedDecoder};
 use zipfs::index::{Index, Method, ROOT_INO, VERIFY_BAD, VERIFY_OK};
 use zipfs::pool::{DecoderBudget, EntryPool};
@@ -30,7 +30,7 @@ impl Fixture {
     fn new(name: &str, entries: &[Entry]) -> Fixture {
         let temp = TempArchive::new(name, &archive(entries));
         let archive = Archive::open(&temp.path).unwrap();
-        let (index, _) = zipfs::index::build(&archive).unwrap();
+        let (index, _) = zipfs::index::build(&archive, Symlinks::default()).unwrap();
         Fixture {
             _temp: temp,
             archive,
@@ -126,7 +126,7 @@ fn a_read_that_stops_inside_the_last_match_does_not_lose_the_tail() {
         &archive_with_stream("f", DEFLATE, &STREAM, &body),
     );
     let archive = Archive::open(&temp.path).unwrap();
-    let (index, _) = zipfs::index::build(&archive).unwrap();
+    let (index, _) = zipfs::index::build(&archive, Symlinks::default()).unwrap();
     let ino = index.lookup(ROOT_INO, b"f").unwrap();
     let meta = index.meta(index.node(ino).unwrap()).unwrap();
     let loc = EntryLocation {
@@ -174,7 +174,7 @@ fn copy_match(body: &mut Vec<u8>, length: usize, distance: usize) {
 
 fn single_entry(temp: &TempArchive) -> (Archive, Index) {
     let archive = Archive::open(&temp.path).unwrap();
-    let (index, _) = zipfs::index::build(&archive).unwrap();
+    let (index, _) = zipfs::index::build(&archive, Symlinks::default()).unwrap();
     (archive, index)
 }
 
@@ -381,7 +381,7 @@ fn a_corrupt_entry_is_reported_when_it_is_read_to_the_end() {
 
     let temp = TempArchive::new("corrupt", &bytes);
     let archive = Archive::open(&temp.path).unwrap();
-    let (index, _) = zipfs::index::build(&archive).unwrap();
+    let (index, _) = zipfs::index::build(&archive, Symlinks::default()).unwrap();
     let ino = index.lookup(ROOT_INO, b"data").unwrap();
     let meta = index.meta(index.node(ino).unwrap()).unwrap();
     let loc = EntryLocation {
@@ -443,7 +443,7 @@ fn a_stream_shorter_than_its_entry_fails_the_read() {
         for verify in [true, false] {
             let temp = TempArchive::new(name, &archive_with_stream("f", method, &stream, &body));
             let archive = Archive::open(&temp.path).unwrap();
-            let (index, _) = zipfs::index::build(&archive).unwrap();
+            let (index, _) = zipfs::index::build(&archive, Symlinks::default()).unwrap();
             let ino = index.lookup(ROOT_INO, b"f").unwrap();
             let meta = index.meta(index.node(ino).unwrap()).unwrap();
             let loc = EntryLocation {

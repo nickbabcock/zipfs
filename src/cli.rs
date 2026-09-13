@@ -13,6 +13,7 @@ use std::fmt::Write as _;
 use std::str::FromStr;
 use std::time::Duration;
 use zipfs::Config;
+use zipfs::config::Symlinks;
 
 /// What a setting does with what it was given.
 pub enum Apply {
@@ -62,6 +63,16 @@ pub const SETTINGS: &[Setting] = &[
         metavar: None,
         help: "check entries against their CRC32 [default]",
         apply: Apply::Flag(|c| c.verify = true),
+    },
+    Setting {
+        name: "symlinks",
+        alias: None,
+        metavar: Some("MODE"),
+        help: "archive symbolic links to expose: none, contained or all; with all, a target can point outside the mount [default: contained]",
+        apply: Apply::Value(|c, v| {
+            c.symlinks = symlink_mode(v)?;
+            Ok(())
+        }),
     },
     Setting {
         name: "source-buffer-size",
@@ -483,6 +494,15 @@ where
     value.parse().map_err(|e| format!("expected a number: {e}"))
 }
 
+fn symlink_mode(value: &str) -> Result<Symlinks, String> {
+    match value {
+        "none" => Ok(Symlinks::None),
+        "contained" => Ok(Symlinks::Contained),
+        "all" => Ok(Symlinks::All),
+        _ => Err(String::from("expected none, contained or all")),
+    }
+}
+
 fn mode(value: &str) -> Result<u16, String> {
     u16::from_str_radix(value.trim_start_matches("0o"), 8)
         .map(|m| m & 0o7777)
@@ -636,7 +656,7 @@ mod tests {
         let mut from_list = Config::default();
         apply(
             &mut from_list,
-            &OsString::from("threads=3,attr-ttl=60,no-verify,umask=077"),
+            &OsString::from("threads=3,attr-ttl=60,no-verify,symlinks=all,umask=077"),
         )
         .unwrap();
 
@@ -647,6 +667,8 @@ mod tests {
             "--attr-ttl",
             "60",
             "--no-verify",
+            "--symlinks",
+            "all",
             "--umask",
             "077",
         ]);
@@ -661,6 +683,8 @@ mod tests {
         assert_eq!(from_list.threads, from_long.threads);
         assert_eq!(from_list.attr_ttl, from_long.attr_ttl);
         assert_eq!(from_list.verify, from_long.verify);
+        assert_eq!(from_list.symlinks, Symlinks::All);
+        assert_eq!(from_list.symlinks, from_long.symlinks);
         assert_eq!(from_list.file_mode, from_long.file_mode);
         assert_eq!(from_list.dir_mode, from_long.dir_mode);
     }
@@ -671,7 +695,20 @@ mod tests {
         assert_eq!(config.threads, 3);
         assert_eq!(config.attr_ttl, Duration::from_secs(60));
         assert!(!config.verify);
+        assert_eq!(config.symlinks, Symlinks::Contained);
         assert!(config.allow_other);
+    }
+
+    #[test]
+    fn a_symlink_mode_must_be_known() {
+        assert_eq!(parse("symlinks=none").unwrap().symlinks, Symlinks::None);
+        assert_eq!(
+            parse("symlinks=contained").unwrap().symlinks,
+            Symlinks::Contained
+        );
+        assert_eq!(parse("symlinks=all").unwrap().symlinks, Symlinks::All);
+        parse("symlinks=local").unwrap_err();
+        parse("symlinks").unwrap_err();
     }
 
     #[test]

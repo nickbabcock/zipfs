@@ -10,11 +10,12 @@ use common::{
 };
 use rawzip::CompressionMethod;
 use std::fs;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 #[cfg(feature = "zstd")]
 use std::sync::Arc;
+use zipfs::config::Symlinks;
 use zipfs::{Archive, Config, ZipFs};
 
 const STORE: CompressionMethod = CompressionMethod::STORE;
@@ -176,6 +177,102 @@ fn a_directory_lists_its_entries_in_order() {
         .collect();
     nested.sort();
     assert_eq!(nested, ["alpha", "beta", "nested"]);
+}
+
+fn symlink_entries() -> Vec<Entry> {
+    vec![
+        Entry::file("a/b/file", "contents", STORE),
+        Entry::symlink("near", "a/b/file"),
+        Entry::symlink("a/b/deepest", "../../a/b/file"),
+        Entry::symlink("a/up", ".."),
+        Entry::symlink("a/b/above", "../../.."),
+        Entry::symlink("root", ".."),
+        Entry::symlink("absolute", "/etc/hostname"),
+        // `a/up` is the root, so this goes above the mount. The path alone
+        // resolves to the root.
+        Entry::symlink("a/b/esc", "../up/../.."),
+        Entry::symlink("chain", "absolute"),
+    ]
+}
+
+fn symlink_config(symlinks: Symlinks) -> Config {
+    Config {
+        symlinks,
+        ..Config::default()
+    }
+}
+
+#[test]
+fn contained_symlinks_work_by_default() {
+    needs_fuse!();
+    let mount = Mount::new("contained", &symlink_entries(), &Config::default());
+
+    assert_eq!(fs::read(mount.path("near")).unwrap(), b"contents");
+    assert_eq!(fs::read(mount.path("a/b/deepest")).unwrap(), b"contents");
+    assert_eq!(fs::read(mount.path("a/up/near")).unwrap(), b"contents");
+    assert_eq!(fs::read_link(mount.path("a/up")).unwrap(), Path::new(".."));
+}
+
+#[test]
+fn a_symlink_that_can_leave_the_mount_is_listed_but_refused() {
+    needs_fuse!();
+    let mount = Mount::new("refused", &symlink_entries(), &Config::default());
+
+    for link in ["a/b/above", "root", "absolute", "a/b/esc"] {
+        let meta = fs::symlink_metadata(mount.path(link)).unwrap();
+        assert!(meta.file_type().is_symlink(), "{link} is not listed");
+        let error = fs::read_link(mount.path(link)).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::PermissionDenied, "{link}");
+    }
+
+    // A contained link cannot reach a target through a refused link.
+    assert_eq!(
+        fs::read_link(mount.path("chain")).unwrap(),
+        Path::new("absolute")
+    );
+    let error = fs::read(mount.path("chain")).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::PermissionDenied);
+}
+
+#[test]
+fn all_symlinks_can_be_hidden() {
+    needs_fuse!();
+    let mount = Mount::new(
+        "no-symlinks",
+        &symlink_entries(),
+        &symlink_config(Symlinks::None),
+    );
+
+    assert_eq!(fs::read(mount.path("a/b/file")).unwrap(), b"contents");
+    for link in ["near", "a/up", "absolute"] {
+        let error = fs::symlink_metadata(mount.path(link)).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::NotFound, "{link}");
+    }
+}
+
+#[test]
+fn all_symlinks_can_be_exposed() {
+    needs_fuse!();
+    let mount = Mount::new(
+        "all-symlinks",
+        &symlink_entries(),
+        &symlink_config(Symlinks::All),
+    );
+
+    for (link, target) in [
+        ("near", "a/b/file"),
+        ("absolute", "/etc/hostname"),
+        ("a/b/esc", "../up/../.."),
+    ] {
+        assert_eq!(fs::read_link(mount.path(link)).unwrap(), Path::new(target));
+    }
+
+    // This is why `contained` refuses a `..` after a name: the kernel really
+    // goes above the mount.
+    let dir = fs::canonicalize(&mount.dir).unwrap();
+    let above = fs::metadata(dir.parent().unwrap().parent().unwrap()).unwrap();
+    let esc = fs::metadata(mount.path("a/b/esc")).unwrap();
+    assert_eq!((esc.dev(), esc.ino()), (above.dev(), above.ino()));
 }
 
 #[test]
