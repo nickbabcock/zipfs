@@ -10,7 +10,8 @@
 mod build;
 mod intern;
 
-pub use build::{BuildStats, build};
+use crate::archive::Archive;
+pub use build::{BuildOptions, BuildStats};
 
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
@@ -137,7 +138,31 @@ pub struct Index {
     pub(crate) total_uncompressed: u64,
 }
 
+/// Builds the default archive index.
+///
+/// Symbolic links are hidden unless a caller uses [`Index::from_archive`] with
+/// [`BuildOptions::allow_symlinks`] enabled.
+///
+/// # Errors
+///
+/// Returns an error when the archive central directory cannot be read.
+pub fn build(archive: &Archive) -> crate::Result<(Index, BuildStats)> {
+    Index::from_archive(archive, BuildOptions::default())
+}
+
 impl Index {
+    /// Builds an archive index with the given options.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the archive central directory cannot be read.
+    pub fn from_archive(
+        archive: &Archive,
+        options: BuildOptions,
+    ) -> crate::Result<(Index, BuildStats)> {
+        build::build(archive, options)
+    }
+
     /// The node for an inode, or `None` if the inode does not exist.
     #[inline]
     #[must_use]

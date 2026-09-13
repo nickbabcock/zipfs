@@ -46,6 +46,13 @@ pub struct BuildStats {
     pub symlinks: u64,
 }
 
+/// Options for building an archive index.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct BuildOptions {
+    /// Expose symbolic links stored in the archive.
+    pub allow_symlinks: bool,
+}
+
 struct Warner {
     seen: u32,
 }
@@ -157,10 +164,11 @@ struct Builder {
     stats: BuildStats,
     dup_warner: Warner,
     reject_warner: Warner,
+    options: BuildOptions,
 }
 
 impl Builder {
-    fn new(hint: usize) -> Builder {
+    fn new(hint: usize, options: BuildOptions) -> Builder {
         let mut nodes = Vec::with_capacity(hint + 1);
         // The root. It is its own parent, which is what `..` should report.
         nodes.push(TmpNode {
@@ -182,6 +190,7 @@ impl Builder {
             stats: BuildStats::default(),
             dup_warner: Warner::new(),
             reject_warner: Warner::new(),
+            options,
         }
     }
 
@@ -257,8 +266,15 @@ impl Builder {
     }
 
     fn add(&mut self, path: &[u8], is_dir: bool, meta: EntryMeta) -> crate::Result<()> {
+        let is_symlink = !is_dir && is_symlink_mode(meta.mode);
+        if is_symlink {
+            self.stats.symlinks += 1;
+        }
         if let Some(why) = reject_reason(path) {
             self.reject(path, why);
+            return Ok(());
+        }
+        if is_symlink && !self.options.allow_symlinks {
             return Ok(());
         }
         // A stored entry has no decoder. Its two sizes must define the same
@@ -290,7 +306,7 @@ impl Builder {
 
         let kind = if is_dir {
             NodeKind::Dir
-        } else if is_symlink_mode(meta.mode) {
+        } else if is_symlink {
             NodeKind::Symlink
         } else {
             NodeKind::File
@@ -341,7 +357,6 @@ impl Builder {
                 .symlink_count
                 .checked_add(1)
                 .ok_or(crate::Error::IndexTooLarge("symlink count"))?;
-            self.stats.symlinks += 1;
         }
         let meta_idx = u32::try_from(self.metas.len())
             .map_err(|_error| crate::Error::IndexTooLarge("metadata count"))?;
@@ -500,14 +515,17 @@ fn is_symlink_mode(mode: u16) -> bool {
     u32::from(mode) & libc::S_IFMT == libc::S_IFLNK
 }
 
-/// Reads the whole central directory and builds the tree.
+/// Reads the whole central directory and builds the tree with the given options.
 ///
 /// # Errors
 ///
 /// Returns an error when the archive central directory cannot be read.
-pub fn build(archive: &Archive) -> crate::Result<(Index, BuildStats)> {
+pub(super) fn build(
+    archive: &Archive,
+    options: BuildOptions,
+) -> crate::Result<(Index, BuildStats)> {
     let hint = archive.entries_hint().min(MAX_PREALLOC) as usize;
-    let mut builder = Builder::new(hint);
+    let mut builder = Builder::new(hint, options);
     let mut buf = vec![0u8; rawzip::RECOMMENDED_BUFFER_SIZE];
     let mut entries = archive.zip().entries(&mut buf);
     let mut counted = 0u64;
