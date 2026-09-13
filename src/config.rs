@@ -16,6 +16,19 @@ pub const SKIP_BUFFER: usize = 64 * 1024;
 /// decides `max_pages`, which caps the size of an individual read request.
 pub const MAX_IO: u32 = 1024 * 1024;
 
+/// Which symbolic links in the archive a mount exposes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Symlinks {
+    /// Hide all symbolic links.
+    None,
+    /// List all symbolic links. Refuse a target unless it is sure to stay inside
+    /// the mount.
+    #[default]
+    Contained,
+    /// List all symbolic links and return all targets.
+    All,
+}
+
 /// How the filesystem behaves for the lifetime of a mount.
 #[derive(Debug, Clone)]
 #[allow(
@@ -25,6 +38,8 @@ pub const MAX_IO: u32 = 1024 * 1024;
 pub struct Config {
     /// Check every fully read entry against its CRC32.
     pub verify: bool,
+    /// Which symbolic links in the archive to expose.
+    pub symlinks: Symlinks,
     /// Bytes of compressed data each decoder buffers.
     pub source_buffer: usize,
     /// Idle decoders one open file may keep.
@@ -65,6 +80,7 @@ impl Default for Config {
             .map_or(4, |n| n.min(8));
         Config {
             verify: true,
+            symlinks: Symlinks::default(),
             source_buffer: DEFAULT_SOURCE_BUFFER,
             decoders_per_file: 4,
             max_retained_decoders: 64,

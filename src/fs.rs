@@ -6,11 +6,14 @@
 
 use crate::archive::Archive;
 use crate::attr::file_attr;
-use crate::config::{Config, MAX_IO};
+use crate::config::{Config, MAX_IO, Symlinks};
 use crate::decode::EntryLocation;
 use crate::guard::{Freshness, GuardedFile};
 use crate::handle::{HandleTable, OpenFile, OpenKind};
-use crate::index::{BuildStats, EntryMeta, Index, MAX_SYMLINK, Method, NodeKind, VERIFY_BAD};
+use crate::index::{
+    BuildStats, EntryMeta, Index, MAX_SYMLINK, Method, NodeKind, VERIFY_BAD, show,
+    symlink_is_contained,
+};
 use crate::pool::{DecoderBudget, EntryPool};
 use crc32fast::Hasher as Crc;
 use fuser::{
@@ -26,7 +29,7 @@ use std::cell::RefCell;
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 /// The capabilities worth asking the kernel for.
 const WANTED: InitFlags = InitFlags::FUSE_ASYNC_READ
@@ -68,6 +71,8 @@ pub struct ZipFs {
     stats: BuildStats,
     /// The largest read the kernel will ask for, learned during `init`.
     max_io: AtomicU32,
+    /// Set after the first refused symlink is logged.
+    symlink_refused: AtomicBool,
 }
 
 impl ZipFs {
@@ -78,7 +83,7 @@ impl ZipFs {
     /// Returns an error when the archive central directory cannot be read.
     pub fn new(archive: Archive, mut config: Config) -> crate::Result<ZipFs> {
         config.clamp();
-        let (index, stats) = crate::index::build(&archive)?;
+        let (index, stats) = crate::index::build(&archive, config.symlinks)?;
         Ok(ZipFs {
             reader: archive.reader(),
             budget: DecoderBudget::new(&config),
@@ -88,6 +93,7 @@ impl ZipFs {
             config,
             stats,
             max_io: AtomicU32::new(MAX_IO),
+            symlink_refused: AtomicBool::new(false),
         })
     }
 
@@ -129,6 +135,21 @@ impl ZipFs {
         } else {
             errno
         }
+    }
+
+    /// A symlink's target, from the cache or from the archive.
+    fn symlink_target(&self, meta: &EntryMeta) -> Result<&[u8], Errno> {
+        // Targets are cached because a symlink is followed far more often than
+        // it changes, which here is never.
+        if let Some(target) = self.index.symlink(meta.symlink_slot) {
+            return Ok(target);
+        }
+        let target = self
+            .read_all(meta, MAX_SYMLINK)
+            .map_err(|e| self.diagnose(e))?;
+        self.index
+            .set_symlink(meta.symlink_slot, target.into_boxed_slice())
+            .ok_or(Errno::from_i32(libc::EIO))
     }
 
     /// Where an entry's compressed bytes live.
@@ -298,24 +319,33 @@ impl fuser::Filesystem for ZipFs {
             reply.error(Errno::from_i32(libc::EIO));
             return;
         };
-        // Targets are cached because a symlink is followed far more often than
-        // it changes, which here is never.
-        if let Some(target) = self.index.symlink(meta.symlink_slot) {
-            reply.data(target);
+        let target = match self.symlink_target(meta) {
+            Ok(target) => target,
+            Err(e) => {
+                reply.error(e);
+                return;
+            }
+        };
+        // The check is here and not at mount, because a target is in the entry
+        // data and the index reads only the central directory.
+        if self.config.symlinks == Symlinks::Contained
+            && !symlink_is_contained(target, self.index.depth(node))
+        {
+            let name = self.index.name(node);
+            if self.symlink_refused.swap(true, Ordering::Relaxed) {
+                debug!("{}: refused a symbolic link", show(name));
+            } else {
+                warn!(
+                    "{}: refused a symbolic link because its target is absolute, goes above \
+                     the mount root, or has a `..` after a name; later refusals are logged \
+                     at debug level; --symlinks=all returns all targets on this mount",
+                    show(name)
+                );
+            }
+            reply.error(Errno::from_i32(libc::EACCES));
             return;
         }
-        match self.read_all(meta, MAX_SYMLINK) {
-            Ok(target) => {
-                let target = self
-                    .index
-                    .set_symlink(meta.symlink_slot, target.into_boxed_slice());
-                match target {
-                    Some(target) => reply.data(target),
-                    None => reply.error(Errno::from_i32(libc::EIO)),
-                }
-            }
-            Err(e) => reply.error(self.diagnose(e)),
-        }
+        reply.data(target);
     }
 
     fn open(&self, _req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {

@@ -10,10 +10,16 @@
   rename or replacement of the archive is not a change, because the mount
   keeps the file that it opened. Over CIFS this is best effort, and over NFS a
   change can be found up to 60 seconds late.
+- Add `--symlinks=none|contained|all` to select which symbolic links a mount
+  exposes. The default is `contained`.
 
 ### Changed
 
 - Log to syslog after the process detaches. Before, these logs were lost.
+- By default, reading or following a symbolic link fails with `EACCES` if its
+  target is absolute, goes above the mount root, or has a `..` after a name.
+  The link is still listed. Before, all targets were returned. Use
+  `--symlinks=all` to get this behavior again.
 
 ## 0.1.2 - 2026-09-07
 
