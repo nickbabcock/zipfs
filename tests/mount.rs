@@ -1,7 +1,7 @@
 //! Reads a mounted archive through the kernel.
 //!
-//! These tests need `/dev/fuse` and `fusermount3`. Where either is missing they
-//! report that and pass, so the suite still runs in a container without FUSE.
+//! These tests need `/dev/fuse` and `fusermount3`. If either is missing, they
+//! report that and pass, unless `ZIPFS_REQUIRE_FUSE` is set.
 
 mod common;
 
@@ -94,10 +94,13 @@ impl Drop for Mount {
     }
 }
 
-/// Skips the body of a test when FUSE is not usable here.
+/// Skip the test if FUSE is not usable, unless `ZIPFS_REQUIRE_FUSE` is set.
 macro_rules! needs_fuse {
     () => {
         if !fuse_available() {
+            if std::env::var_os("ZIPFS_REQUIRE_FUSE").is_some() {
+                panic!("FUSE is required but /dev/fuse or fusermount3 is not available");
+            }
             eprintln!("skipping: /dev/fuse or fusermount3 is not available");
             return;
         }

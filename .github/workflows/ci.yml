@@ -20,7 +20,16 @@ jobs:
           components: rustfmt, clippy
       - run: cargo fmt --all -- --check
       - run: cargo clippy --locked --all-targets --all-features -- -D warnings
-      - run: cargo test --locked --all-features
+      - name: Check FUSE
+        run: |
+          test -c /dev/fuse
+          test -r /dev/fuse
+          test -w /dev/fuse
+          command -v fusermount3
+      - name: Run tests
+        env:
+          ZIPFS_REQUIRE_FUSE: '1'
+        run: cargo test --locked --all-features
       - name: Check the manual page
         run: |
           sudo apt-get update
