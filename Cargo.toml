@@ -3,7 +3,6 @@ name = "zipfs"
 version = "0.1.2"
 publish = false
 edition = "2024"
-rust-version = "1.85"
 description = "A read-only FUSE filesystem for zip archives"
 license = "MIT"
 repository = "https://github.com/nickbabcock/zipfs"
