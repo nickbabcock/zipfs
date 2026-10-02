@@ -77,7 +77,7 @@ impl Default for Config {
             gid: unsafe { libc::getegid() },
             file_mode: 0o644,
             dir_mode: 0o755,
-            attr_ttl: Duration::from_secs(31_536_000),
+            attr_ttl: Duration::from_hours(365 * 24),
             allow_other: false,
             allow_root: false,
             auto_unmount: false,

@@ -72,7 +72,7 @@ impl DecoderBudget {
     /// Claims a slot for an idle decoder, if one is free.
     fn try_retain(&self) -> bool {
         self.retained
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
                 (n < self.max_retained).then_some(n + 1)
             })
             .is_ok()

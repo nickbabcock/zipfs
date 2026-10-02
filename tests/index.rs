@@ -168,8 +168,14 @@ fn trailing_separators_and_dot_leaves_are_normalized() {
     );
 
     assert_eq!(names(&index, ROOT_INO), ["a", "b"]);
-    assert!(names(&index, resolve(&index, "a").unwrap()).is_empty());
-    assert!(names(&index, resolve(&index, "b").unwrap()).is_empty());
+    assert_eq!(
+        names(&index, resolve(&index, "a").unwrap()),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        names(&index, resolve(&index, "b").unwrap()),
+        Vec::<String>::new()
+    );
 }
 
 #[test]
@@ -265,7 +271,7 @@ fn nested_directories_count_towards_their_parent_link_count() {
 fn an_empty_archive_still_has_a_root() {
     let (_t, index, stats) = index_of("empty", &[]);
     assert_eq!(index.node(ROOT_INO).unwrap().kind, NodeKind::Dir);
-    assert!(names(&index, ROOT_INO).is_empty());
+    assert_eq!(names(&index, ROOT_INO), Vec::<String>::new());
     assert_eq!(stats.entries, 0);
 }
 
