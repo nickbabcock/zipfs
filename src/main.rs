@@ -285,7 +285,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         )
     })?;
     let config = fs.config().clone();
-    report(fs.stats());
+    report(fs.stats(), config.allow_symlinks);
 
     if args.fake {
         // The archive is open and indexed and the mount point has been
@@ -538,7 +538,7 @@ fn redirect_standard_streams() -> std::io::Result<()> {
     Ok(())
 }
 
-fn report(stats: &zipfs::index::BuildStats) {
+fn report(stats: &zipfs::index::BuildStats, allow_symlinks: bool) {
     log::info!(
         "indexed {} entries and {} implied directories",
         stats.entries,
@@ -569,6 +569,12 @@ fn report(stats: &zipfs::index::BuildStats) {
         log::warn!(
             "{} entries use a compression method that is not supported",
             stats.unsupported
+        );
+    }
+    if stats.symlinks > 0 && !allow_symlinks {
+        log::warn!(
+            "{} symbolic links are hidden; use --allow-symlinks to expose them",
+            stats.symlinks
         );
     }
 }

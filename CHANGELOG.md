@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Hide symbolic links by default. Use `--allow-symlinks` to expose them.
+
 ## 0.1.2 - 2026-09-07
 
 ### Added

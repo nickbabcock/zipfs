@@ -127,6 +127,13 @@ fn sample_entries() -> Vec<Entry> {
     entries
 }
 
+fn symlink_config() -> Config {
+    Config {
+        allow_symlinks: true,
+        ..Config::default()
+    }
+}
+
 #[test]
 fn a_directory_lists_its_entries_in_order() {
     needs_fuse!();
@@ -144,7 +151,6 @@ fn a_directory_lists_its_entries_in_order() {
                 "deflated.txt",
                 "dir",
                 "empty",
-                "link",
                 "readonly",
                 "stored.bin",
                 "zstd.txt",
@@ -152,14 +158,7 @@ fn a_directory_lists_its_entries_in_order() {
         }
         #[cfg(not(feature = "zstd"))]
         {
-            vec![
-                "deflated.txt",
-                "dir",
-                "empty",
-                "link",
-                "readonly",
-                "stored.bin",
-            ]
+            vec!["deflated.txt", "dir", "empty", "readonly", "stored.bin"]
         }
     };
     assert_eq!(names, expected);
@@ -173,9 +172,17 @@ fn a_directory_lists_its_entries_in_order() {
 }
 
 #[test]
+fn symlinks_are_hidden_by_default() {
+    needs_fuse!();
+    let mount = Mount::new("hidden-symlink", &sample_entries(), &Config::default());
+
+    fs::symlink_metadata(mount.path("link")).unwrap_err();
+}
+
+#[test]
 fn metadata_matches_the_archive() {
     needs_fuse!();
-    let mount = Mount::new("metadata", &sample_entries(), &Config::default());
+    let mount = Mount::new("metadata", &sample_entries(), &symlink_config());
 
     let meta = fs::metadata(mount.path("deflated.txt")).unwrap();
     assert!(meta.is_file());
@@ -200,7 +207,7 @@ fn a_stored_symlink_crc_failure_is_reported() {
     needs_fuse!();
     let mut bytes = archive(&[Entry::symlink("link", "target")]);
     patch_central_crc(&mut bytes, b"link", u32::MAX);
-    let mount = Mount::from_bytes("corrupt-symlink", &bytes, &Config::default());
+    let mount = Mount::from_bytes("corrupt-symlink", &bytes, &symlink_config());
 
     fs::read_link(mount.path("link")).unwrap_err();
 }
