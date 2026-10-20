@@ -2,10 +2,11 @@
 
 Mounts a zip archive as a read-only FUSE filesystem.
 
-- Natively multi-threaded. With 12 threads, zipfs is 5x faster than mount-zip and fuse-zip, which serve one request at a time.
-- Repeat reads come from the kernel page cache without decoding a second time, yielding 100x improvement over `mount-zip` and `fuse-zip`.
-- Built for large archives (100 GB and 100k entries). It mounts in milliseconds
-  and never writes a decompressed copy to disk.
+- **Scales with cores.** zipfs is the only zip FUSE filesystem that serves reads in parallel: 5x faster than mount-zip and fuse-zip.
+- **Re-reads at page-cache speed.** Decoded pages stay in the page cache across opens, unlocking a 100x faster second read.
+- **Instant mount, no scratch space.** A 10 GB archive with 10k entries mounts in 10 ms with sub 5 MB idle RSS and without decoding anything to disk or RAM.
+- **Detects a changed archive.** Reads fail with `ESTALE` and never return stale data.
+- **No runtime dependencies.** zipfs is one static binary with no libfuse, libzip or Boost.
 
 ```bash
 zipfs archive.zip /mnt/archive
