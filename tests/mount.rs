@@ -343,6 +343,71 @@ fn a_corrupt_entry_fails_to_read_unless_checking_is_turned_off() {
 }
 
 #[test]
+fn an_archive_written_over_while_mounted_reports_estale() {
+    needs_fuse!();
+    for verify in [true, false] {
+        let entries = sample_entries();
+        let temp = TempArchive::new("rewritten", &archive(&entries));
+        let path = temp.path.clone();
+        let config = Config {
+            verify,
+            ..Config::default()
+        };
+        let mount = Mount::from_temp("rewritten", temp, &config);
+        assert_eq!(fs::read(mount.path("dir/alpha")).unwrap(), b"a");
+
+        // An entry in front moves every other entry, so the offsets in the
+        // index point at the wrong bytes.
+        let moved: Vec<Entry> = [Entry::file("first", pseudo_random(5_000, 9), STORE)]
+            .into_iter()
+            .chain(sample_entries())
+            .collect();
+        fs::write(&path, archive(&moved)).unwrap();
+
+        for name in ["stored.bin", "deflated.txt"] {
+            let Err(error) = fs::read(mount.path(name)) else {
+                panic!("{name} with verify={verify} read without an error");
+            };
+            assert_eq!(
+                error.raw_os_error(),
+                Some(libc::ESTALE),
+                "{name} with verify={verify}: {error}"
+            );
+        }
+    }
+}
+
+#[test]
+fn an_archive_replaced_or_moved_on_a_local_filesystem_stays_readable() {
+    needs_fuse!();
+    let entries = sample_entries();
+    let temp = TempArchive::new("replaced", &archive(&entries));
+    let path = temp.path.clone();
+    let mount = Mount::from_temp("replaced", temp, &Config::default());
+    assert_eq!(fs::read(mount.path("dir/alpha")).unwrap(), b"a");
+
+    // An atomic replace, as rsync and many build tools do it. The open
+    // descriptor keeps the file that was mounted.
+    let next = TempArchive::new("replaced-next", &archive(&[Entry::file("x", "x", STORE)]));
+    fs::rename(&next.path, &path).unwrap();
+    let moved = path.with_extension("moved");
+    fs::rename(&path, &moved).unwrap();
+
+    for entry in &entries {
+        if entry.path.ends_with('/') || entry.mode.is_some() || entry.path == "dir/alpha" {
+            continue;
+        }
+        assert_eq!(
+            fs::read(mount.path(entry.path)).unwrap(),
+            entry.body,
+            "{}",
+            entry.path
+        );
+    }
+    fs::remove_file(moved).unwrap();
+}
+
+#[test]
 fn writes_are_refused() {
     needs_fuse!();
     let mount = Mount::new("readonly", &sample_entries(), &Config::default());

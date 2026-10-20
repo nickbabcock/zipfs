@@ -8,10 +8,10 @@
 
 use crate::codec::{Codec, Decompressor};
 use crate::config::SKIP_BUFFER;
+use crate::guard::GuardedFile;
 use crate::index::{EntryMeta, Method, VERIFY_BAD, VERIFY_OK};
 use crate::source::BufSource;
 use crc32fast::Hasher as Crc;
-use rawzip::FileReader;
 use std::io;
 use std::sync::Arc;
 
@@ -52,7 +52,7 @@ pub struct PositionedDecoder {
 impl PositionedDecoder {
     /// Builds a decoder at offset zero from recycled parts.
     pub fn new(
-        reader: Arc<FileReader>,
+        reader: Arc<GuardedFile>,
         loc: EntryLocation,
         parts: CoreParts,
         verify: bool,
@@ -134,6 +134,15 @@ impl PositionedDecoder {
                 "decoder is past the requested offset",
             ));
         }
+        self.fill(offset, out, meta).inspect_err(|e| {
+            // Without checks, the bytes before the bad part stay readable.
+            if self.crc.is_some() && proves_bad(e) {
+                meta.set_verify_state(VERIFY_BAD);
+            }
+        })
+    }
+
+    fn fill(&mut self, offset: u64, out: &mut [u8], meta: &EntryMeta) -> io::Result<usize> {
         let total = meta.uncompressed_size;
         let PositionedDecoder {
             pos,
@@ -215,7 +224,8 @@ impl PositionedDecoder {
         let overrun = match pump.step(&mut extra) {
             Ok(n) => n > 0,
             Err(e) => {
-                meta.set_verify_state(VERIFY_BAD);
+                // Otherwise the next read tries again.
+                self.verified = proves_bad(&e);
                 return Err(e);
             }
         };
@@ -230,6 +240,19 @@ impl PositionedDecoder {
         meta.set_verify_state(VERIFY_OK);
         Ok(())
     }
+}
+
+/// Whether an error shows that the entry itself is bad, so that a read of it
+/// cannot succeed later. The decompressor rejected the bytes, or the entry
+/// goes past the end of the archive. A change to the archive can also cause
+/// these errors before its stamps show the change, so a read of a bad entry
+/// examines the archive again. A failure to read the archive can be
+/// temporary, so it does not show that the entry is bad.
+fn proves_bad(e: &io::Error) -> bool {
+    matches!(
+        e.kind(),
+        io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof
+    )
 }
 
 fn truncated() -> io::Error {
