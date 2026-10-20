@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Added
+
+- Find a change to the archive while it is mounted. zipfs examines the
+  archive after each read from it, before it uses the bytes. After a change,
+  reads fail with `ESTALE`, and one error is logged. On a local filesystem, a
+  rename or replacement of the archive is not a change, because the mount
+  keeps the file that it opened. Over CIFS this is best effort, and over NFS a
+  change can be found up to 60 seconds late.
+
 ### Changed
 
 - Log to syslog after the process detaches. Before, these logs were lost.

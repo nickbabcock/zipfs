@@ -1,8 +1,8 @@
 //! The archive file and the one piece of state that is filled in lazily.
 
+use crate::guard::{Freshness, GuardedFile};
 use crate::index::EntryMeta;
-use rawzip::{FileReader, ReaderAt, ZipArchive, ZipLocator};
-use std::fs::File;
+use rawzip::{ReaderAt, ZipArchive, ZipLocator};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -14,14 +14,13 @@ use std::sync::atomic::Ordering;
 /// borrow one of the filesystem's own fields. [`ReaderAt::read_at`] takes
 /// `&self` and issues a real `pread`, so concurrent readers need no
 /// synchronisation at all.
+///
+/// Every read, the central directory included, goes through a
+/// [`GuardedFile`], so no byte from a changed archive is used.
 #[derive(Debug)]
 pub struct Archive {
-    zip: ZipArchive<Arc<FileReader>>,
-    reader: Arc<FileReader>,
-    /// The archive's length and modification time when it was opened, so a
-    /// change underneath the mount can be reported.
-    pub len: u64,
-    pub mtime: std::time::SystemTime,
+    zip: ZipArchive<Arc<GuardedFile>>,
+    reader: Arc<GuardedFile>,
 }
 
 impl Archive {
@@ -32,32 +31,29 @@ impl Archive {
     /// Returns an error when the file cannot be opened or read, or when the zip
     /// archive has no valid central directory.
     pub fn open(path: &Path) -> crate::Result<Archive> {
-        let file = File::open(path)?;
-        let meta = file.metadata()?;
-        let len = meta.len();
-        let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
-        let reader = Arc::new(FileReader::from(file));
+        let reader = Arc::new(GuardedFile::open(path)?);
         let mut buf = vec![0u8; rawzip::RECOMMENDED_BUFFER_SIZE];
         let zip = ZipLocator::new()
-            .locate_in_reader(Arc::clone(&reader), &mut buf, len)
+            .locate_in_reader(Arc::clone(&reader), &mut buf, reader.len())
             .map_err(|(_, e)| crate::Error::Zip(e))?;
-        Ok(Archive {
-            zip,
-            reader,
-            len,
-            mtime,
-        })
+        Ok(Archive { zip, reader })
+    }
+
+    /// Examines the archive again, for a read that failed.
+    #[must_use]
+    pub fn check(&self) -> Freshness {
+        self.reader.check()
     }
 
     /// Returns the parsed zip archive.
     #[must_use]
-    pub fn zip(&self) -> &ZipArchive<Arc<FileReader>> {
+    pub fn zip(&self) -> &ZipArchive<Arc<GuardedFile>> {
         &self.zip
     }
 
     /// A handle a decoder can own for the life of the mount.
     #[must_use]
-    pub fn reader(&self) -> Arc<FileReader> {
+    pub fn reader(&self) -> Arc<GuardedFile> {
         Arc::clone(&self.reader)
     }
 
@@ -76,7 +72,8 @@ impl Archive {
     ///
     /// Returns an error when the requested bytes cannot be read from the file.
     pub fn read_at(&self, buf: &mut [u8], offset: u64) -> std::io::Result<()> {
-        self.reader.read_exact_at(buf, offset)
+        // rawzip's `Arc` wrapper does not forward `read_exact_at`.
+        self.reader.as_ref().read_exact_at(buf, offset)
     }
 
     /// Where an entry's compressed bytes begin.

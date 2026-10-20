@@ -285,9 +285,7 @@ fn a_final_decompressor_error_marks_verification_bad() {
     let meta = fixture.meta("data");
     let compressed = [0x8a, 0x00, 0x07];
     let temp = TempArchive::new("final-validation-bytes", &compressed);
-    let reader = Arc::new(rawzip::FileReader::from(
-        std::fs::File::open(&temp.path).unwrap(),
-    ));
+    let reader = Arc::new(zipfs::GuardedFile::open(&temp.path).unwrap());
     let loc = EntryLocation {
         data_start: 0,
         compressed_size: compressed.len() as u64,
