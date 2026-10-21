@@ -35,7 +35,18 @@ fixed, which is what lets the kernel cache pages and metadata indefinitely.
 Without
 .B \-\-foreground
 the process forks when the mount is ready, and the first process exits. A
-script can therefore mount and then read, with no wait in between.
+script can therefore mount and then read, with no wait in between. Logs
+before the fork go to standard error. Logs after the fork go to
+.BR syslog (3),
+with the identity
+.B zipfs
+and the facility
+.BR LOG_DAEMON .
+On a systemd machine,
+.B journalctl \-t zipfs
+shows them. zipfs drops a log line that the syslog daemon cannot take at
+once, so a slow daemon does not stop the mount. Later, zipfs logs how many
+lines it dropped. Errors wait up to one second for the daemon.
 .SH OPTIONS
 Each option below has two spellings: the long option shown here, and the same
 name without the dashes in an
@@ -107,7 +118,7 @@ such as
 are accepted and passed on.
 .TP
 .BR \-f ", " \-\-foreground
-Stay in the foreground and keep logging to standard error
+Stay in the foreground and keep logging to standard error, not to syslog
 .TP
 .B \-s
 Serve with one thread, the same as
@@ -229,6 +240,8 @@ starts for the type
 .BR mount (8),
 .BR fstab (5),
 .BR fusermount3 (1),
+.BR journalctl (1),
+.BR syslog (3),
 .BR systemd.mount (5)
 .SH BUGS
 Report bugs at

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Log to syslog after the process detaches. Before, these logs were lost.
+
 ## 0.1.2 - 2026-09-07
 
 ### Added
