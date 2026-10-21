@@ -44,6 +44,23 @@ sudo apt install fuse3
 The archive must not change while it is mounted. Its contents are treated as
 fixed, which is what lets the kernel cache pages and metadata indefinitely.
 
+If the archive changes, zipfs logs an error and reads fail with `ESTALE`.
+Mount the archive again to read the new contents. zipfs examines the archive
+after each read from it, before it uses the bytes. It finds a change when the
+size or the modification time is different. A change to the permissions or
+other metadata only is not a change. Reads that the page cache serves do not
+reach zipfs and cost nothing. Without `--foreground`, zipfs logs to syslog, so
+`journalctl -t zipfs` shows the error.
+
+On a local filesystem, zipfs keeps the file that it mounted. If you rename,
+remove or replace the archive, the mount continues to show the old contents.
+A write that keeps the size and the recorded modification time is not found.
+This can occur when the filesystem records time in large steps, for example
+2 seconds on FAT.
+
+Over CIFS, the client can open the path again after a reconnect. So zipfs also
+examines the path after each read. This protection is best effort only.
+
 - Supported compression methods: stored, deflate and zstd.
 - Paths that are absolute, that contain `..`, or that hold a NUL byte are
   skipped, and the count is reported at mount.

@@ -8,8 +8,8 @@
 
 use crate::codec::Codec;
 use crate::decode::{CoreParts, EntryLocation, PositionedDecoder};
+use crate::guard::GuardedFile;
 use crate::index::Method;
-use rawzip::FileReader;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -124,14 +124,14 @@ pub struct EntryPool {
     idle: Mutex<Vec<PositionedDecoder>>,
     per_handle_cap: usize,
     budget: Arc<DecoderBudget>,
-    reader: Arc<FileReader>,
+    reader: Arc<GuardedFile>,
     loc: EntryLocation,
 }
 
 impl EntryPool {
     pub fn new(
         budget: Arc<DecoderBudget>,
-        reader: Arc<FileReader>,
+        reader: Arc<GuardedFile>,
         loc: EntryLocation,
         per_handle_cap: usize,
     ) -> EntryPool {

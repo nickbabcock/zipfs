@@ -32,6 +32,38 @@ counted at mount time and cannot be read.
 The archive must not change while it is mounted. Its contents are treated as
 fixed, which is what lets the kernel cache pages and metadata indefinitely.
 .PP
+If the archive changes,
+.B zipfs
+logs an error and reads fail with
+.BR ESTALE .
+Mount the archive again to read the new contents.
+.B zipfs
+examines the archive after each read from it, before it uses the bytes. A
+change is found when the size or the modification time is different. A change
+to the permissions or other metadata only is not a change.
+.PP
+On a local filesystem,
+.B zipfs
+keeps the file that it mounted. If the archive is renamed, removed or replaced,
+the mount continues to show the old contents. The kernel changes the
+modification time before it writes the data. A write that keeps the size and
+the recorded modification time is not found. This can occur when the
+filesystem records time in large steps and the write comes in the same step as
+the last write before the mount. It also occurs when a tool sets the old time
+again after it writes.
+.PP
+Over CIFS, the client can open the path again after a reconnect, and an open
+file can then read a replacement. So
+.B zipfs
+also examines the path after each read. It finds the path from the directory
+that held the archive at mount time, so the archive can be inside the mount
+point. The times come from the attribute cache, which the
+.B actimeo
+mount option refreshes. After a read fails its checks,
+.B zipfs
+also compares the end of the archive through its open file. This protection is
+best effort only.
+.PP
 Without
 .B \-\-foreground
 the process forks when the mount is ready, and the first process exits. A
