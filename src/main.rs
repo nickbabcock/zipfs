@@ -4,10 +4,16 @@ mod cli;
 
 use fuser::{MountOption, Session, SessionACL};
 use log::{Level, LevelFilter, Log, Metadata, Record};
+use std::cell::{Cell, RefCell};
 use std::error::Error;
 use std::fs;
+use std::io::Write;
+use std::os::unix::net::UnixDatagram;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
+use std::time::Duration;
 use zipfs::{Archive, Config, ZipFs};
 
 // Avoid the default musl allocator under concurrent allocation workloads.
@@ -29,14 +35,15 @@ Options:
 const USAGE_TAIL: &str = "  -o OPT[,OPT...]               any option above, without the dashes, as
                                 mount(8) and fstab spell it
   -f, --foreground              stay in the foreground and keep logging to
-                                standard error
+                                standard error, not to syslog
   -s                            serve with one thread, the same as --threads 1
   -v, --verbose                 log more; repeat for debug and trace
   -h, --help                    print this help
   -V, --version                 print the version
 
 Without --foreground the process forks once the mount is ready and the first
-process exits, so a script can mount and then read without waiting.
+process exits, so a script can mount and then read without waiting. After the
+fork, logs go to syslog as 'zipfs'; see them with 'journalctl -t zipfs'.
 
 Started under a name that begins with 'mount.', as mount(8) starts a helper,
 the short options take their mount(8) meanings instead: -s tolerates unknown
@@ -50,16 +57,34 @@ fn usage() -> String {
     format!("{USAGE_HEAD}{}{USAGE_TAIL}", cli::settings_help())
 }
 
-/// Writes log records to standard error.
-struct Stderr;
+/// Writes log records to standard error, or to syslog once the process is a
+/// daemon.
+struct Logger;
 
-impl Log for Stderr {
+/// Set after the process detaches. Standard error then goes to `/dev/null`,
+/// so syslog is the only place a record can go.
+static SYSLOG: OnceLock<Syslog> = OnceLock::new();
+
+/// The number of records that syslog did not take and that the logger has
+/// not yet reported.
+static DROPPED: AtomicUsize = AtomicUsize::new(0);
+
+/// The second, since the epoch, of the last report of dropped records. The
+/// logger reports at most once each second, so that the reports do not fill
+/// the queue that they report on.
+static REPORTED: AtomicI64 = AtomicI64::new(0);
+
+impl Log for Logger {
     fn enabled(&self, metadata: &Metadata) -> bool {
         metadata.level() <= log::max_level()
     }
 
     fn log(&self, record: &Record) {
         if !self.enabled(record.metadata()) {
+            return;
+        }
+        if let Some(syslog) = SYSLOG.get() {
+            syslog.log(record);
             return;
         }
         let level = match record.level() {
@@ -75,7 +100,224 @@ impl Log for Stderr {
     fn flush(&self) {}
 }
 
-static LOGGER: Stderr = Stderr;
+static LOGGER: Logger = Logger;
+
+/// Sends log records and panic reports to syslog from here on.
+///
+/// Call it after the process detaches and before the workers start. On a
+/// systemd machine, syslog is the journal, and `journalctl -t zipfs` shows
+/// the records.
+fn redirect_to_syslog() {
+    // Without the socket, records go to `/dev/null`, which is no worse than
+    // before the process detached.
+    let Ok(syslog) = Syslog::open(PathBuf::from("/dev/log")) else {
+        return;
+    };
+    let _ = SYSLOG.set(syslog);
+    // The default hook writes to standard error, so a panic on a worker
+    // thread must go through the logger, or nobody sees it.
+    std::panic::set_hook(Box::new(|info| {
+        let thread = std::thread::current();
+        let name = thread.name().unwrap_or("<unnamed>");
+        let message = info.payload_as_str().unwrap_or("Box<dyn Any>");
+        let location = info
+            .location()
+            .map_or_else(String::new, |l| format!(" at {l}"));
+        let backtrace = std::backtrace::Backtrace::capture();
+        if backtrace.status() == std::backtrace::BacktraceStatus::Captured {
+            log::error!("thread '{name}' panicked{location}: {message}\n{backtrace}");
+        } else {
+            log::error!("thread '{name}' panicked{location}: {message}");
+        }
+    }));
+}
+
+/// Two datagram sockets that send records to the syslog daemon at
+/// `/dev/log`.
+///
+/// `syslog(3)` holds a lock for each record and waits while the daemon is
+/// busy, so at debug levels all workers wait on the journal. Here each line
+/// is one `sendto` with no lock. A line that the daemon cannot take at once
+/// is dropped, and a later record tells how many were dropped.
+///
+/// Each send names the address and does not connect, so the sockets continue
+/// to work after the daemon restarts.
+struct Syslog {
+    /// Waits for a busy daemon, but not longer than one second.
+    waiting: UnixDatagram,
+    /// Does not wait.
+    quick: UnixDatagram,
+    path: PathBuf,
+    pid: u32,
+}
+
+thread_local! {
+    /// The last second that this thread formatted, and its RFC 3164
+    /// timestamp. `localtime_r` takes a lock in libc, so each thread calls
+    /// it at most once each second.
+    static STAMP: Cell<(libc::time_t, [u8; 15])> = const { Cell::new((-1, [0; 15])) };
+}
+
+thread_local! {
+    /// The datagram for each thread, so that most records do not allocate.
+    static BUFFER: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The capacity that a thread's datagram keeps after a long record.
+const BUFFER_CAPACITY: usize = 4096;
+
+impl Syslog {
+    fn open(path: PathBuf) -> std::io::Result<Syslog> {
+        let waiting = UnixDatagram::unbound()?;
+        waiting.set_write_timeout(Some(Duration::from_secs(1)))?;
+        let quick = UnixDatagram::unbound()?;
+        quick.set_nonblocking(true)?;
+        Ok(Syslog {
+            waiting,
+            quick,
+            path,
+            pid: std::process::id(),
+        })
+    }
+
+    fn log(&self, record: &Record) {
+        let sent = BUFFER.try_with(|buffer| {
+            // The buffer is in use when the panic hook runs while this thread
+            // formats a record. Then the inner record takes a new buffer.
+            let Ok(mut buffer) = buffer.try_borrow_mut() else {
+                return false;
+            };
+            self.send_record(&mut buffer, record);
+            // A long backtrace does not keep its memory for the thread's life.
+            buffer.shrink_to(BUFFER_CAPACITY);
+            true
+        });
+        if !matches!(sent, Ok(true)) {
+            self.send_record(&mut Vec::new(), record);
+        }
+    }
+
+    fn send_record(&self, datagram: &mut Vec<u8>, record: &Record) {
+        let severity = match record.level() {
+            Level::Error => libc::LOG_ERR,
+            Level::Warn => libc::LOG_WARNING,
+            Level::Info => libc::LOG_INFO,
+            Level::Debug | Level::Trace => libc::LOG_DEBUG,
+        };
+        // An error is rare and is the record most likely to matter, so it
+        // waits for a busy daemon. Other records do not stall the workers.
+        let mut wait = record.level() == Level::Error;
+        // SAFETY: `time` accepts a null pointer.
+        let now = unsafe { libc::time(std::ptr::null_mut()) };
+
+        datagram.clear();
+        self.header(datagram, severity, now);
+        let header = datagram.len();
+        let _ = write!(datagram, "{}", record.args());
+        let mut sent = false;
+        // Some syslog daemons escape or cut a message at a newline, so send
+        // each line as a record. The journal cuts a message at a NUL, so
+        // remove each NUL. Most records have neither, and go as they are.
+        if datagram[header..].iter().any(|&b| b == b'\n' || b == 0) {
+            let message = datagram.split_off(header);
+            for line in message
+                .split(|&b| b == b'\n')
+                .filter(|line| !line.is_empty())
+            {
+                datagram.truncate(header);
+                datagram.extend(line.iter().filter(|&&b| b != 0));
+                if self.send(datagram, wait) {
+                    sent = true;
+                } else {
+                    DROPPED.fetch_add(1, Ordering::Relaxed);
+                    // The daemon did not take this line in a second, so the
+                    // other lines of a backtrace do not wait a second each.
+                    wait = false;
+                }
+            }
+        } else if datagram.len() > header {
+            if self.send(datagram, wait) {
+                sent = true;
+            } else {
+                DROPPED.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        // The daemon took a line, so it can probably take the report too.
+        if !sent || DROPPED.load(Ordering::Relaxed) == 0 {
+            return;
+        }
+        let last = REPORTED.load(Ordering::Relaxed);
+        if last == now
+            || REPORTED
+                .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+                .is_err()
+        {
+            return;
+        }
+        let dropped = DROPPED.swap(0, Ordering::Relaxed);
+        if dropped > 0 {
+            datagram.clear();
+            self.header(datagram, libc::LOG_WARNING, now);
+            let _ = write!(datagram, "syslog did not take {dropped} log lines");
+            if !self.send(datagram, false) {
+                DROPPED.fetch_add(dropped, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// Writes the RFC 3164 header, as `syslog(3)` writes it.
+    fn header(&self, datagram: &mut Vec<u8>, severity: libc::c_int, now: libc::time_t) {
+        let (second, mut stamp) = STAMP.get();
+        if second != now {
+            stamp = timestamp(now);
+            STAMP.set((now, stamp));
+        }
+        let _ = write!(datagram, "<{}>", libc::LOG_DAEMON | severity);
+        datagram.extend_from_slice(&stamp);
+        let _ = write!(datagram, " zipfs[{}]: ", self.pid);
+    }
+
+    /// Sends one datagram, and tells if the daemon took it.
+    fn send(&self, datagram: &[u8], wait: bool) -> bool {
+        let socket = if wait { &self.waiting } else { &self.quick };
+        loop {
+            match socket.send_to(datagram, &self.path) {
+                Ok(_) => return true,
+                // A signal stopped the wait, so try again.
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => return false,
+            }
+        }
+    }
+}
+
+/// Formats the local time as RFC 3164 does, for example `Oct  2 21:41:39`.
+fn timestamp(now: libc::time_t) -> [u8; 15] {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    // SAFETY: all zeros is a valid `tm` for `localtime_r` to fill.
+    let tm = unsafe {
+        let mut tm: libc::tm = std::mem::zeroed();
+        libc::localtime_r(&raw const now, &raw mut tm);
+        tm
+    };
+    let month = usize::try_from(tm.tm_mon)
+        .ok()
+        .and_then(|m| MONTHS.get(m))
+        .unwrap_or(&MONTHS[0]);
+    let mut stamp = [b' '; 15];
+    let _ = write!(
+        &mut stamp[..],
+        "{month} {:2} {:02}:{:02}:{:02}",
+        tm.tm_mday,
+        tm.tm_hour,
+        tm.tm_min,
+        tm.tm_sec,
+    );
+    stamp
+}
 
 #[derive(Debug)]
 struct ContextError {
@@ -257,7 +499,12 @@ fn main() -> ExitCode {
     match run(&args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("zipfs: {e}");
+            // After the process detaches, standard error goes to `/dev/null`.
+            if SYSLOG.get().is_some() {
+                log::error!("{e}");
+            } else {
+                eprintln!("zipfs: {e}");
+            }
             ExitCode::FAILURE
         }
     }
@@ -357,6 +604,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             // to drop the session, which takes the mount with it.
             Err(DetachError::Reported) => return Ok(()),
         }
+        redirect_to_syslog();
     }
 
     session.run().map_err(|e| {
@@ -514,8 +762,8 @@ fn detach() -> std::io::Result<()> {
 /// Points the standard streams at `/dev/null`.
 ///
 /// A daemon that kept them would write over whatever the caller does next, and
-/// would hold the terminal open. Logs are lost from here on, which is what
-/// `--foreground` is for.
+/// would hold the terminal open. After the process detaches, logs go to
+/// syslog, and `--foreground` keeps them on standard error.
 fn redirect_standard_streams() -> std::io::Result<()> {
     // SAFETY: the path is a NUL terminated string that lives for the call.
     let null = unsafe { libc::open(c"/dev/null".as_ptr(), libc::O_RDWR) };
@@ -569,6 +817,46 @@ fn report(stats: &zipfs::index::BuildStats) {
         log::warn!(
             "{} entries use a compression method that is not supported",
             stats.unsupported
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn syslog_sends_each_line_as_a_datagram() {
+        let path = std::env::temp_dir().join(format!("zipfs-syslog-{}", std::process::id()));
+        let _ = fs::remove_file(&path);
+        let daemon = UnixDatagram::bind(&path).unwrap();
+        daemon.set_nonblocking(true).unwrap();
+        let syslog = Syslog::open(path.clone()).unwrap();
+
+        let log = |level, args| syslog.log(&Record::builder().level(level).args(args).build());
+        log(Level::Warn, format_args!("plain"));
+        log(Level::Error, format_args!("one\ntw\0o\n\nthree"));
+
+        let mut received = Vec::new();
+        let mut buf = [0u8; 1024];
+        while let Ok(n) = daemon.recv(&mut buf) {
+            received.push(String::from_utf8_lossy(&buf[..n]).into_owned());
+        }
+        fs::remove_file(&path).unwrap();
+
+        let tail = format!(" zipfs[{}]: ", std::process::id());
+        let messages: Vec<_> = received
+            .iter()
+            .map(|d| (&d[..4], d.split_once(&tail).unwrap().1))
+            .collect();
+        assert_eq!(
+            messages,
+            [
+                ("<28>", "plain"),
+                ("<27>", "one"),
+                ("<27>", "two"),
+                ("<27>", "three")
+            ]
         );
     }
 }
