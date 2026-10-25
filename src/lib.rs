@@ -10,6 +10,7 @@ pub mod codec;
 pub mod config;
 pub mod decode;
 pub mod fs;
+pub mod guard;
 pub mod handle;
 pub mod hash;
 pub mod index;
@@ -19,6 +20,7 @@ pub mod source;
 pub use archive::Archive;
 pub use config::Config;
 pub use fs::ZipFs;
+pub use guard::{Freshness, GuardedFile};
 pub use index::{Index, Node, NodeKind};
 
 use std::fmt;

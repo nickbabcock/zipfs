@@ -1,11 +1,11 @@
 //! Open files.
 
 use crate::decode::EntryLocation;
+use crate::guard::GuardedFile;
 use crate::hash::IdentityBuildHasher;
 use crate::index::{EntryMeta, Index, VERIFY_BAD, VERIFY_OK};
 use crate::pool::{DecoderBudget, EntryPool};
 use crc32fast::Hasher as Crc;
-use rawzip::FileReader;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
@@ -85,7 +85,7 @@ pub struct OpenFile {
 impl OpenFile {
     pub fn new(
         index: Arc<Index>,
-        reader: Arc<FileReader>,
+        reader: Arc<GuardedFile>,
         budget: Arc<DecoderBudget>,
         ino: u64,
         meta_idx: u32,

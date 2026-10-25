@@ -1,6 +1,7 @@
 //! A buffered reader over one byte range of the archive.
 
-use rawzip::{FileReader, ReaderAt};
+use crate::guard::GuardedFile;
+use rawzip::ReaderAt;
 use std::io::{self, BufRead, Read};
 use std::sync::Arc;
 
@@ -12,7 +13,7 @@ use std::sync::Arc;
 /// recycled onto another entry keeps it.
 #[derive(Debug)]
 pub struct BufSource {
-    reader: Arc<FileReader>,
+    reader: Arc<GuardedFile>,
     start: u64,
     len: u64,
     /// Bytes of the range that have already left the buffer.
@@ -25,7 +26,7 @@ pub struct BufSource {
 impl BufSource {
     /// Wraps `[start, start + len)` of the file.
     #[must_use]
-    pub fn new(reader: Arc<FileReader>, start: u64, len: u64, buf: Box<[u8]>) -> BufSource {
+    pub fn new(reader: Arc<GuardedFile>, start: u64, len: u64, buf: Box<[u8]>) -> BufSource {
         BufSource {
             reader,
             start,
@@ -77,7 +78,9 @@ impl BufRead for BufSource {
             let want = usize::try_from(remaining)
                 .unwrap_or(usize::MAX)
                 .min(self.buf.len());
+            // rawzip's `Arc` wrapper does not forward `read_exact_at`.
             self.reader
+                .as_ref()
                 .read_exact_at(&mut self.buf[..want], self.start + self.consumed)?;
             self.filled = want;
         }
