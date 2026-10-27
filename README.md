@@ -5,7 +5,7 @@ Mounts a zip archive as a read-only FUSE filesystem.
 - **Scales with cores.** zipfs is the only zip FUSE filesystem that serves reads in parallel: 5x faster than mount-zip and fuse-zip.
 - **Re-reads at page-cache speed.** Decoded pages stay in the page cache across opens, unlocking a 100x faster second read.
 - **Instant mount, no scratch space.** A 10 GB archive with 10k entries mounts in 10 ms with sub 5 MB idle RSS and without decoding anything to disk or RAM.
-- **Detects a changed archive.** Reads fail with `ESTALE` and never return stale data.
+- **Detects archive changes.** When zipfs detects a change, archive reads fail with `ESTALE`. See [Notes](#notes) for the limits.
 - **No runtime dependencies.** zipfs is one static binary with no libfuse, libzip or Boost.
 
 ```bash
@@ -45,12 +45,13 @@ sudo apt install fuse3
 The archive must not change while it is mounted. Its contents are treated as
 fixed, which is what lets the kernel cache pages and metadata indefinitely.
 
-If the archive changes, zipfs logs an error and reads fail with `ESTALE`.
+When zipfs detects a change, it logs an error and archive reads fail with `ESTALE`.
 Mount the archive again to read the new contents. zipfs examines the archive
 after each read from it, before it uses the bytes. It finds a change when the
 size or the modification time is different. A change to the permissions or
 other metadata only is not a change. Reads that the page cache serves do not
-reach zipfs and cost nothing. Without `--foreground`, zipfs logs to syslog, so
+reach zipfs and can still return earlier contents after a change. Without
+`--foreground`, zipfs logs to syslog, so
 `journalctl -t zipfs` shows the error.
 
 On a local filesystem, zipfs keeps the file that it mounted. If you rename,
