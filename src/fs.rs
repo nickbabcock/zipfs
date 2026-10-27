@@ -8,6 +8,7 @@ use crate::archive::Archive;
 use crate::attr::file_attr;
 use crate::config::{Config, MAX_IO};
 use crate::decode::EntryLocation;
+use crate::guard::{Freshness, GuardedFile};
 use crate::handle::{HandleTable, OpenFile, OpenKind};
 use crate::index::{BuildStats, EntryMeta, Index, MAX_SYMLINK, Method, NodeKind, VERIFY_BAD};
 use crate::pool::{DecoderBudget, EntryPool};
@@ -21,7 +22,6 @@ use fuser::{
     ReplyStatfs,
 };
 use log::{debug, warn};
-use rawzip::FileReader;
 use std::cell::RefCell;
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
@@ -61,7 +61,7 @@ fn with_scratch<R>(len: usize, f: impl FnOnce(&mut [u8]) -> R) -> R {
 pub struct ZipFs {
     index: Arc<Index>,
     archive: Archive,
-    reader: Arc<FileReader>,
+    reader: Arc<GuardedFile>,
     handles: HandleTable,
     budget: Arc<DecoderBudget>,
     config: Config,
@@ -118,14 +118,33 @@ impl ZipFs {
         Ok(method)
     }
 
+    /// The error to report when an operation on the archive fails.
+    ///
+    /// Bytes that do not match the index give EIO, and a changed archive
+    /// gives exactly that. So EIO is the cue to examine the archive, and a
+    /// changed archive is reported as ESTALE.
+    fn diagnose(&self, errno: Errno) -> Errno {
+        if errno == Errno::EIO && self.archive.check() == Freshness::Stale {
+            Errno::ESTALE
+        } else {
+            errno
+        }
+    }
+
     /// Where an entry's compressed bytes live.
     fn locate(&self, meta: &EntryMeta) -> Result<EntryLocation, Errno> {
+        if self.reader.is_stale() {
+            return Err(Errno::ESTALE);
+        }
         let method = Self::readable(meta)?;
         if method == Method::Store && meta.compressed_size != meta.uncompressed_size {
             return Err(Errno::from_i32(libc::EIO));
         }
         let data_start = self.archive.data_start(meta).map_err(|e| {
-            warn!("could not locate entry data: {e}");
+            // A changed archive was logged one time already, when it was found.
+            if !self.reader.is_stale() {
+                warn!("could not locate entry data: {e}");
+            }
             Errno::from_i32(e.errno())
         })?;
         Ok(EntryLocation {
@@ -295,7 +314,7 @@ impl fuser::Filesystem for ZipFs {
                     None => reply.error(Errno::from_i32(libc::EIO)),
                 }
             }
-            Err(e) => reply.error(e),
+            Err(e) => reply.error(self.diagnose(e)),
         }
     }
 
@@ -323,7 +342,7 @@ impl fuser::Filesystem for ZipFs {
         let loc = match self.locate(meta) {
             Ok(loc) => loc,
             Err(e) => {
-                reply.error(e);
+                reply.error(self.diagnose(e));
                 return;
             }
         };
@@ -337,8 +356,9 @@ impl fuser::Filesystem for ZipFs {
             &self.config,
         );
         let fh = self.handles.insert(file);
-        // The archive cannot change while it is mounted, so anything the page
-        // cache already holds stays correct.
+        // Each page in the cache was verified before it was cached, so it
+        // stays correct while a handle that is already open reads it. After a
+        // change is found, opens fail, so the mount is not used further.
         reply.opened(FileHandle(fh), FopenFlags::FOPEN_KEEP_CACHE);
     }
 
@@ -357,8 +377,14 @@ impl fuser::Filesystem for ZipFs {
             reply.error(Errno::from_i32(libc::EBADF));
             return;
         };
+        if self.reader.is_stale() {
+            reply.error(Errno::ESTALE);
+            return;
+        }
+        // The stamps can show a change only after the bytes changed, so a
+        // change can look like a bad entry. Examine the archive again.
         if file.meta().verify_state() == VERIFY_BAD {
-            reply.error(Errno::from_i32(libc::EIO));
+            reply.error(self.diagnose(Errno::EIO));
             return;
         }
         let available = file.size.saturating_sub(offset);
@@ -402,7 +428,7 @@ impl fuser::Filesystem for ZipFs {
             };
             match result {
                 Ok(n) => reply.data(&buf[..n]),
-                Err(errno) => reply.error(Errno::from_i32(errno)),
+                Err(errno) => reply.error(self.diagnose(Errno::from_i32(errno))),
             }
         });
     }

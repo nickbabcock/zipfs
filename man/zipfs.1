@@ -32,10 +32,56 @@ counted at mount time and cannot be read.
 The archive must not change while it is mounted. Its contents are treated as
 fixed, which is what lets the kernel cache pages and metadata indefinitely.
 .PP
+If the archive changes,
+.B zipfs
+logs an error and reads fail with
+.BR ESTALE .
+Mount the archive again to read the new contents.
+.B zipfs
+examines the archive after each read from it, before it uses the bytes. A
+change is found when the size or the modification time is different. A change
+to the permissions or other metadata only is not a change.
+.PP
+On a local filesystem,
+.B zipfs
+keeps the file that it mounted. If the archive is renamed, removed or replaced,
+the mount continues to show the old contents. The kernel changes the
+modification time before it writes the data. A write that keeps the size and
+the recorded modification time is not found. This can occur when the
+filesystem records time in large steps and the write comes in the same step as
+the last write before the mount. It also occurs when a tool sets the old time
+again after it writes, or when it writes again to a page of a shared mapping
+that it has written to already.
+.PP
+Over CIFS, the client can open the path again after a reconnect, and an open
+file can then read a replacement. So
+.B zipfs
+also examines the path after each read. It finds the path from the directory
+that held the archive at mount time, so the archive can be inside the mount
+point. The times come from the attribute cache, which the
+.B actimeo
+mount option refreshes. This protection is best effort only.
+.PP
+Over NFS, a change made on another host is found only once the attribute
+cache expires, up to 60 seconds by default. Mount with
+.B actimeo=0
+to find it on the next read.
+.PP
 Without
 .B \-\-foreground
 the process forks when the mount is ready, and the first process exits. A
-script can therefore mount and then read, with no wait in between.
+script can therefore mount and then read, with no wait in between. Logs
+before the fork go to standard error. Logs after the fork go to
+.BR syslog (3),
+with the identity
+.B zipfs
+and the facility
+.BR LOG_DAEMON .
+On a systemd machine,
+.B journalctl \-t zipfs
+shows them. zipfs drops a log line that the syslog daemon cannot take at
+once, so a slow daemon does not stop the mount. Later, zipfs logs how many
+lines it dropped. Errors wait up to one second for the daemon.
 .SH OPTIONS
 Each option below has two spellings: the long option shown here, and the same
 name without the dashes in an
@@ -107,7 +153,7 @@ such as
 are accepted and passed on.
 .TP
 .BR \-f ", " \-\-foreground
-Stay in the foreground and keep logging to standard error
+Stay in the foreground and keep logging to standard error, not to syslog
 .TP
 .B \-s
 Serve with one thread, the same as
@@ -229,6 +275,8 @@ starts for the type
 .BR mount (8),
 .BR fstab (5),
 .BR fusermount3 (1),
+.BR journalctl (1),
+.BR syslog (3),
 .BR systemd.mount (5)
 .SH BUGS
 Report bugs at
