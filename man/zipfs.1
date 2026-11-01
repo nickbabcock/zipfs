@@ -34,8 +34,14 @@ fixed, which is what lets the kernel cache pages and metadata indefinitely.
 .PP
 If the archive changes,
 .B zipfs
-logs an error and reads fail with
+logs an error and does not return data from the changed archive. Opens fail
+with
 .BR ESTALE .
+Reads fail with
+.BR ESTALE ,
+but the kernel can change this to
+.B EIO
+for reads through the page cache.
 Mount the archive again to read the new contents.
 .B zipfs
 examines the archive after each read from it, before it uses the bytes. A
