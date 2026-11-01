@@ -368,14 +368,22 @@ fn an_archive_written_over_while_mounted_reports_estale() {
         fs::write(&path, archive(&moved)).unwrap();
 
         for (name, mut file) in names.into_iter().zip(held) {
-            let Err(error) = file.read_to_end(&mut Vec::new()) else {
+            let mut data = Vec::new();
+            let Err(error) = file.read_to_end(&mut data) else {
                 panic!("held {name} with verify={verify} read without an error");
             };
-            assert_eq!(
-                error.raw_os_error(),
-                Some(libc::ESTALE),
+            // zipfs replies with ESTALE. A read through the page cache can
+            // change this to EIO on some kernels, for example Linux 7.0.
+            assert!(
+                matches!(error.raw_os_error(), Some(libc::ESTALE | libc::EIO)),
                 "read of {name} with verify={verify}: {error}"
             );
+            assert!(
+                data.is_empty(),
+                "held {name} with verify={verify} returned {} bytes from the changed archive",
+                data.len()
+            );
+            // An open does not go through the page cache, so ESTALE is not changed.
             let Err(error) = fs::File::open(mount.path(name)) else {
                 panic!("{name} with verify={verify} opened without an error");
             };
