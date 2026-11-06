@@ -2,10 +2,11 @@
 
 Mounts a zip archive as a read-only FUSE filesystem.
 
-- Natively multi-threaded. With 12 threads, zipfs is 5x faster than mount-zip and fuse-zip, which serve one request at a time.
-- Repeat reads come from the kernel page cache without decoding a second time, yielding 100x improvement over `mount-zip` and `fuse-zip`.
-- Built for large archives (100 GB and 100k entries). It mounts in milliseconds
-  and never writes a decompressed copy to disk.
+- **Scales with cores.** zipfs is the only zip FUSE filesystem that serves reads in parallel: 5x faster than mount-zip and fuse-zip.
+- **Re-reads at page-cache speed.** Decoded pages stay in the page cache across opens, unlocking a 100x faster second read.
+- **Instant mount, no scratch space.** A 10 GB archive with 10k entries mounts in 10 ms with sub 5 MB idle RSS and without decoding anything to disk or RAM.
+- **Detects archive changes.** When zipfs detects a change, opens and reads fail instead of returning data from the changed archive. See [Notes](#notes) for the limits.
+- **No runtime dependencies.** zipfs is one static binary with no libfuse, libzip or Boost.
 
 ```bash
 zipfs archive.zip /mnt/archive
@@ -42,11 +43,13 @@ sudo apt install fuse3
 ## Notes
 
 The archive must not change while it is mounted. If it changes, zipfs logs an
-error (`journalctl -t zipfs`), and opens and reads fail. zipfs does not return
-data from the changed archive. Mount the archive again to read the new
-contents. On a local filesystem, a rename or replacement of the archive is not
-a change, because the mount keeps the file that it opened. `man zipfs` tells
-how zipfs finds a change, and what the limits are over CIFS and NFS.
+error (`journalctl -t zipfs`), and opens and reads that reach zipfs fail. zipfs
+does not return data from the changed archive, but pages that are already in
+the page cache can still show the earlier contents. Mount the archive again to
+read the new contents. On a local filesystem, a rename or replacement of the
+archive is not a change, because the mount keeps the file that it opened.
+`man zipfs` tells how zipfs finds a change, and what the limits are over CIFS
+and NFS.
 
 - Supported compression methods: stored, deflate and zstd.
 - Paths that are absolute, that contain `..`, or that hold a NUL byte are
