@@ -5,7 +5,9 @@
 
 mod common;
 
-use common::{Entry, TempArchive, archive, compressible, pseudo_random};
+use common::{
+    Entry, TempArchive, archive, archive_with_deflate_stream, compressible, deflate, pseudo_random,
+};
 use rawzip::CompressionMethod;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
@@ -297,6 +299,28 @@ fn many_threads_read_many_files_at_once() {
             });
         }
     });
+}
+
+/// A short reply makes the kernel think that the file is shorter than its size.
+/// Then a reader gets an end of file with no error, and `stat` shows the new size.
+#[test]
+fn a_stream_shorter_than_its_entry_fails_the_read() {
+    needs_fuse!();
+    let body = pseudo_random(200_000, 31);
+    let whole = deflate(&body);
+    let streams = [
+        ("cut", whole[..whole.len() / 2].to_vec()),
+        ("early", deflate(&body[..100_000])),
+    ];
+    for (name, stream) in streams {
+        let bytes = archive_with_deflate_stream("f", &stream, &body);
+        let mount = Mount::from_bytes(name, &bytes, &Config::default());
+
+        let error = fs::read(mount.path("f")).unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(libc::EIO), "{name}");
+        let size = fs::metadata(mount.path("f")).unwrap().len();
+        assert_eq!(size, body.len() as u64, "{name}");
+    }
 }
 
 #[test]

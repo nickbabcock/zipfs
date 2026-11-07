@@ -3,7 +3,7 @@
 mod common;
 
 use common::{
-    Entry, TempArchive, archive, archive_with_deflate_stream, compressible, pseudo_random,
+    Entry, TempArchive, archive, archive_with_deflate_stream, compressible, deflate, pseudo_random,
 };
 use rawzip::CompressionMethod;
 use std::sync::Arc;
@@ -334,6 +334,54 @@ fn a_final_decompressor_error_marks_verification_bad() {
 
     assert!(result.is_err(), "the final decompressor error was ignored");
     assert_eq!(meta.verify_state(), VERIFY_BAD);
+}
+
+/// The central directory promises `body`, but the stream gives only part of it.
+/// A stream can be cut, or it can end correctly but too soon.
+#[test]
+fn a_stream_shorter_than_its_entry_fails_the_read() {
+    let body = pseudo_random(200_000, 29);
+    let whole = deflate(&body);
+    let streams = [
+        ("cut", whole[..whole.len() / 2].to_vec()),
+        ("early", deflate(&body[..100_000])),
+    ];
+    for (name, stream) in streams {
+        for verify in [true, false] {
+            let temp = TempArchive::new(name, &archive_with_deflate_stream("f", &stream, &body));
+            let archive = Archive::open(&temp.path).unwrap();
+            let (index, _) = zipfs::index::build(&archive).unwrap();
+            let ino = index.lookup(ROOT_INO, b"f").unwrap();
+            let meta = index.meta(index.node(ino).unwrap()).unwrap();
+            let loc = EntryLocation {
+                data_start: archive.data_start(meta).unwrap(),
+                compressed_size: meta.compressed_size,
+                method: meta.method().unwrap(),
+            };
+            let mut decoder =
+                PositionedDecoder::new(archive.reader(), loc, parts(loc.method), verify);
+
+            let mut chunk = [0u8; 4096];
+            let mut offset = 0u64;
+            let error = loop {
+                match decoder.read_at(offset, &mut chunk, meta) {
+                    Ok(n) => {
+                        assert_eq!(n, chunk.len(), "{name} read short at {offset}");
+                        offset += n as u64;
+                    }
+                    Err(error) => break error,
+                }
+            };
+            assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof, "{name}");
+            assert_eq!(meta.verify_state(), VERIFY_BAD, "{name}");
+
+            // The same decoder must not change its answer on the next read.
+            let again = decoder
+                .read_at(decoder.pos(), &mut chunk, meta)
+                .unwrap_err();
+            assert_eq!(again.kind(), std::io::ErrorKind::UnexpectedEof, "{name}");
+        }
+    }
 }
 
 #[test]
