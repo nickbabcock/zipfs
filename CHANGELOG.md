@@ -20,6 +20,9 @@
 - Do not end a read early when the decompressor consumed all of its input but
   still held output. Before, a file could read short with no error, because
   the checksum is only examined at the end of an entry.
+- Fail a read with `EIO` when a compressed stream ends before the size that the
+  central directory gives. Before, the file read short with no error, and its
+  size changed to match.
 
 ## 0.1.2 - 2026-09-07
 

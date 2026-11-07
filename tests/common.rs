@@ -95,6 +95,19 @@ pub fn archive(entries: &[Entry]) -> Vec<u8> {
     out
 }
 
+/// Compresses `body` to a raw deflate stream.
+///
+/// # Panics
+///
+/// Panics when the encoder fails, which cannot occur for a memory buffer.
+#[must_use]
+pub fn deflate(body: &[u8]) -> Vec<u8> {
+    let mut encoder =
+        flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(body).unwrap();
+    encoder.finish().unwrap()
+}
+
 /// Writes an archive with one deflate entry that holds a stream made by hand.
 ///
 /// # Panics

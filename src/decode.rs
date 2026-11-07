@@ -173,7 +173,9 @@ impl PositionedDecoder {
             written += n;
         }
 
-        if self.pos >= total {
+        // A short reply tells the kernel that the file ends there. Thus a stream
+        // that ends before the entry does must fail this read.
+        if self.pos >= total || self.finished {
             self.verify(meta)?;
         }
         Ok(written)
@@ -181,14 +183,14 @@ impl PositionedDecoder {
 
     /// Checks the finished entry against the central directory.
     fn verify(&mut self, meta: &EntryMeta) -> io::Result<()> {
-        if self.verified {
-            return Ok(());
-        }
-        self.verified = true;
         if self.pos != meta.uncompressed_size {
             meta.set_verify_state(VERIFY_BAD);
             return Err(truncated());
         }
+        if self.verified {
+            return Ok(());
+        }
+        self.verified = true;
         let Some(crc) = &self.crc else {
             return Ok(());
         };
