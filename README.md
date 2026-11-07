@@ -23,7 +23,7 @@ fusermount3 -u /mnt/archive
 Download and install the `.deb` for `amd64` or `arm64`:
 
 ```bash
-sudo apt install ./zipfs_0.1.1_amd64.deb
+sudo apt install ./zipfs_0.2.0_amd64.deb
 ```
 
 ### Direct download

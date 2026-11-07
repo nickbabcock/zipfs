@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.0 - 2026-11-07
+
 ### Added
 
 - Find a change to the archive while it is mounted. zipfs examines the
