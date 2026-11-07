@@ -11,10 +11,18 @@
   keeps the file that it opened. Over CIFS this is best effort, and over NFS a
   change can be found up to 60 seconds late.
 - Read Deflate64 entries, which Windows Explorer can write.
+- Add `--symlinks=none|contained|all` to select which symbolic links a mount
+  exposes. The default is `contained`.
 
 ### Changed
 
 - Log to syslog after the process detaches. Before, these logs were lost.
+- By default, reading or following a symbolic link fails with `EACCES` if its
+  target is absolute, goes above the mount root, or has a `..` after a name.
+  The link is still listed. A tool that reads a link and does not follow it,
+  such as `ls -l`, `cp -a`, `tar` or `rsync -a`, also gets this error and reports
+  a failure. Before, all targets were returned. Use `--symlinks=all` to get this
+  behavior again.
 
 ### Fixed
 

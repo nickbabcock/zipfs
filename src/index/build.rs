@@ -8,6 +8,7 @@
 use super::intern::{Interner, TmpNode};
 use super::{EntryMeta, FLAG_SYNTHETIC, Index, NO_META, Node, NodeKind, VERIFY_UNKNOWN};
 use crate::archive::Archive;
+use crate::config::Symlinks;
 use log::{debug, warn};
 use std::fmt::Write as _;
 use std::sync::OnceLock;
@@ -42,7 +43,7 @@ pub struct BuildStats {
     pub unsupported: u64,
     /// Directories invented because no entry declared them.
     pub synthetic_dirs: u64,
-    /// Symlinks found.
+    /// Symlinks indexed or hidden. A rejected entry is not counted.
     pub symlinks: u64,
 }
 
@@ -63,7 +64,7 @@ impl Warner {
 }
 
 /// Renders a path for a log line without assuming it is text.
-fn show(path: &[u8]) -> String {
+pub(crate) fn show(path: &[u8]) -> String {
     let mut out = String::with_capacity(path.len());
     for &b in path {
         if b.is_ascii_graphic() || b == b' ' {
@@ -157,10 +158,11 @@ struct Builder {
     stats: BuildStats,
     dup_warner: Warner,
     reject_warner: Warner,
+    symlinks: Symlinks,
 }
 
 impl Builder {
-    fn new(hint: usize) -> Builder {
+    fn new(hint: usize, symlinks: Symlinks) -> Builder {
         let mut nodes = Vec::with_capacity(hint + 1);
         // The root. It is its own parent, which is what `..` should report.
         nodes.push(TmpNode {
@@ -182,6 +184,7 @@ impl Builder {
             stats: BuildStats::default(),
             dup_warner: Warner::new(),
             reject_warner: Warner::new(),
+            symlinks,
         }
     }
 
@@ -257,6 +260,7 @@ impl Builder {
     }
 
     fn add(&mut self, path: &[u8], is_dir: bool, meta: EntryMeta) -> crate::Result<()> {
+        let is_symlink = !is_dir && is_symlink_mode(meta.mode);
         if let Some(why) = reject_reason(path) {
             self.reject(path, why);
             return Ok(());
@@ -286,11 +290,18 @@ impl Builder {
         let normalized = normalize_path(path);
         let (parent_path, leaf) = split_parent(&normalized);
         let parent = self.resolve_parent(parent_path)?;
+        // A hidden link keeps its parent directories, so that each mode shows
+        // the same directories. It does not claim its name, so a later entry
+        // can use that name.
+        if is_symlink && self.symlinks == Symlinks::None {
+            self.stats.symlinks += 1;
+            return Ok(());
+        }
         let (id, fresh) = self.intern(parent, leaf)?;
 
         let kind = if is_dir {
             NodeKind::Dir
-        } else if is_symlink_mode(meta.mode) {
+        } else if is_symlink {
             NodeKind::Symlink
         } else {
             NodeKind::File
@@ -505,9 +516,9 @@ fn is_symlink_mode(mode: u16) -> bool {
 /// # Errors
 ///
 /// Returns an error when the archive central directory cannot be read.
-pub fn build(archive: &Archive) -> crate::Result<(Index, BuildStats)> {
+pub fn build(archive: &Archive, symlinks: Symlinks) -> crate::Result<(Index, BuildStats)> {
     let hint = archive.entries_hint().min(MAX_PREALLOC) as usize;
-    let mut builder = Builder::new(hint);
+    let mut builder = Builder::new(hint, symlinks);
     let mut buf = vec![0u8; rawzip::RECOMMENDED_BUFFER_SIZE];
     let mut entries = archive.zip().entries(&mut buf);
     let mut counted = 0u64;
