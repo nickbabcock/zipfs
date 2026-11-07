@@ -73,6 +73,19 @@ cache expires, up to 60 seconds by default. Mount with
 .B actimeo=0
 to find it on the next read.
 .PP
+By default, a symbolic link is listed, but its target is returned only if it
+is sure to stay inside the mount. If not, reads of the link fail with
+.BR EACCES .
+A target must be relative. All
+.B ..
+components must come before all names, and they must not go above the root of
+the archive. A bind mount of a subdirectory does not get this protection,
+because a link can go above the bind mount and stay inside the archive. Use
+.B \-\-symlinks=all
+to return all targets, which can point outside the mount. Use
+.B \-\-symlinks=none
+to hide all links.
+.PP
 Without
 .B \-\-foreground
 the process forks when the mount is ready, and the first process exits. A
@@ -103,6 +116,9 @@ Skip the CRC32 check on entries that are read to the end. The alias \fBnoverify\
 .TP
 .B \-\-verify
 Check entries against their CRC32 [default].
+.TP
+.BI \-\-symlinks " MODE"
+Archive symbolic links to expose: none, contained or all; with all, a target can point outside the mount [default: contained].
 .TP
 .BI \-\-source\-buffer\-size " N"
 Compressed bytes each decoder buffers [default: 524288].

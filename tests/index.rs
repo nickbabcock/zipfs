@@ -6,13 +6,22 @@ use common::{Entry, TempArchive, archive};
 use rawzip::CompressionMethod;
 const STORE: CompressionMethod = CompressionMethod::STORE;
 const DEFLATE: CompressionMethod = CompressionMethod::DEFLATE;
+use zipfs::config::Symlinks;
 use zipfs::index::{NodeKind, ROOT_INO};
 use zipfs::{Archive, Index};
 
 fn index_of(name: &str, entries: &[Entry]) -> (TempArchive, Index, zipfs::index::BuildStats) {
+    index_with_symlinks(name, entries, Symlinks::default())
+}
+
+fn index_with_symlinks(
+    name: &str,
+    entries: &[Entry],
+    symlinks: Symlinks,
+) -> (TempArchive, Index, zipfs::index::BuildStats) {
     let temp = TempArchive::new(name, &archive(entries));
     let archive = Archive::open(&temp.path).unwrap();
-    let (index, stats) = zipfs::index::build(&archive).unwrap();
+    let (index, stats) = zipfs::index::build(&archive, symlinks).unwrap();
     (temp, index, stats)
 }
 
@@ -86,7 +95,7 @@ fn the_first_of_two_entries_with_one_name_wins() {
     ]);
     let temp = TempArchive::new("duplicate", &bytes);
     let archive = Archive::open(&temp.path).unwrap();
-    let (index, stats) = zipfs::index::build(&archive).unwrap();
+    let (index, stats) = zipfs::index::build(&archive, Symlinks::default()).unwrap();
 
     let ino = resolve(&index, "same.txt").unwrap();
     let meta = index.meta(index.node(ino).unwrap()).unwrap();
@@ -127,7 +136,7 @@ fn a_path_that_escapes_the_archive_is_skipped() {
 
     let temp = TempArchive::new("escape", &bytes);
     let archive = Archive::open(&temp.path).unwrap();
-    let (index, stats) = zipfs::index::build(&archive).unwrap();
+    let (index, stats) = zipfs::index::build(&archive, Symlinks::default()).unwrap();
 
     assert_eq!(names(&index, ROOT_INO), ["fine.txt"]);
     assert_eq!(stats.rejected_paths, 1);
@@ -188,7 +197,7 @@ fn a_stored_entry_with_different_sizes_is_not_indexed() {
 
     let temp = TempArchive::new("stored-sizes", &bytes);
     let archive = Archive::open(&temp.path).unwrap();
-    let (index, stats) = zipfs::index::build(&archive).unwrap();
+    let (index, stats) = zipfs::index::build(&archive, Symlinks::default()).unwrap();
 
     assert!(resolve(&index, "data").is_none());
     assert!(resolve(&index, "next").is_some());
@@ -203,7 +212,7 @@ fn an_encrypted_stored_entry_with_different_sizes_stays_indexed() {
 
     let temp = TempArchive::new("encrypted-stored", &bytes);
     let archive = Archive::open(&temp.path).unwrap();
-    let (index, stats) = zipfs::index::build(&archive).unwrap();
+    let (index, stats) = zipfs::index::build(&archive, Symlinks::default()).unwrap();
 
     let ino = resolve(&index, "secret").expect("the encrypted entry is listed");
     let meta = index.meta(index.node(ino).unwrap()).unwrap();
@@ -235,11 +244,68 @@ fn a_name_that_is_not_text_survives_as_bytes() {
     let bytes = archive(&[Entry::file("caf\u{e9}.txt", "x", STORE)]);
     let temp = TempArchive::new("bytes", &bytes);
     let archive = Archive::open(&temp.path).unwrap();
-    let (index, _) = zipfs::index::build(&archive).unwrap();
+    let (index, _) = zipfs::index::build(&archive, Symlinks::default()).unwrap();
 
     let children = names(&index, ROOT_INO);
     assert_eq!(children.len(), 1);
     assert!(index.lookup(ROOT_INO, "caf\u{e9}.txt".as_bytes()).is_some());
+}
+
+#[test]
+fn symlinks_can_be_hidden() {
+    let (_t, index, stats) = index_with_symlinks(
+        "hidden-symlink",
+        &[Entry::symlink("link", "target.txt")],
+        Symlinks::None,
+    );
+
+    assert!(resolve(&index, "link").is_none());
+    assert_eq!(stats.entries, 0);
+    assert_eq!(stats.symlinks, 1);
+}
+
+#[test]
+fn a_hidden_symlink_keeps_its_parent_directories() {
+    let (_t, index, _) = index_with_symlinks(
+        "hidden-symlink-parent",
+        &[Entry::symlink("a/b/link", "target.txt")],
+        Symlinks::None,
+    );
+
+    let parent = resolve(&index, "a/b").unwrap();
+    assert_eq!(index.node(parent).unwrap().kind, NodeKind::Dir);
+    assert!(resolve(&index, "a/b/link").is_none());
+}
+
+#[test]
+fn a_hidden_symlink_does_not_claim_its_name() {
+    let (_t, index, stats) = index_with_symlinks(
+        "hidden-symlink-name",
+        &[
+            Entry::symlink("name", "target.txt"),
+            Entry::file("name", "contents", STORE),
+        ],
+        Symlinks::None,
+    );
+
+    let ino = resolve(&index, "name").unwrap();
+    assert_eq!(index.node(ino).unwrap().kind, NodeKind::File);
+    assert_eq!(stats.duplicates, 0);
+}
+
+#[test]
+fn a_rejected_symlink_is_not_counted() {
+    for symlinks in [Symlinks::None, Symlinks::Contained, Symlinks::All] {
+        // The fixture writer cleans a path, so the bad path is patched in after.
+        let mut bytes = archive(&[Entry::symlink("aa/evil", "target.txt")]);
+        replace_all(&mut bytes, b"aa/evil", b"../evil");
+        let temp = TempArchive::new("rejected-symlink", &bytes);
+        let archive = Archive::open(&temp.path).unwrap();
+        let (_, stats) = zipfs::index::build(&archive, symlinks).unwrap();
+
+        assert_eq!(stats.rejected_paths, 1);
+        assert_eq!(stats.symlinks, 0);
+    }
 }
 
 #[test]

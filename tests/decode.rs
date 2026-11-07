@@ -5,7 +5,7 @@ mod common;
 use common::{Entry, TempArchive, archive, compressible, pseudo_random};
 use rawzip::CompressionMethod;
 use std::sync::Arc;
-use zipfs::config::SKIP_BUFFER;
+use zipfs::config::{SKIP_BUFFER, Symlinks};
 use zipfs::decode::{CoreParts, EntryLocation, PositionedDecoder};
 use zipfs::index::{Index, Method, ROOT_INO, VERIFY_BAD, VERIFY_OK};
 use zipfs::pool::{DecoderBudget, EntryPool};
@@ -26,7 +26,7 @@ impl Fixture {
     fn new(name: &str, entries: &[Entry]) -> Fixture {
         let temp = TempArchive::new(name, &archive(entries));
         let archive = Archive::open(&temp.path).unwrap();
-        let (index, _) = zipfs::index::build(&archive).unwrap();
+        let (index, _) = zipfs::index::build(&archive, Symlinks::default()).unwrap();
         Fixture {
             _temp: temp,
             archive,
@@ -254,7 +254,7 @@ fn a_corrupt_entry_is_reported_when_it_is_read_to_the_end() {
 
     let temp = TempArchive::new("corrupt", &bytes);
     let archive = Archive::open(&temp.path).unwrap();
-    let (index, _) = zipfs::index::build(&archive).unwrap();
+    let (index, _) = zipfs::index::build(&archive, Symlinks::default()).unwrap();
     let ino = index.lookup(ROOT_INO, b"data").unwrap();
     let meta = index.meta(index.node(ino).unwrap()).unwrap();
     let loc = EntryLocation {
