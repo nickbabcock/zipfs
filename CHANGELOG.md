@@ -24,6 +24,9 @@
 - Fail a read with `EIO` when a compressed stream ends before the size that the
   central directory gives. Before, the file read short with no error, and its
   size changed to match.
+- Apply `noexec` and `nosymfollow` from an option list or an fstab line. Before,
+  the mount did not get these flags: `noexec` gave no message, and `nosymfollow`
+  gave only a warning. Now the mount fails if it does not get a flag.
 
 ## 0.1.2 - 2026-09-07
 

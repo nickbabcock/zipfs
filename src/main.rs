@@ -8,8 +8,9 @@ use std::cell::{Cell, RefCell};
 use std::error::Error;
 use std::fs;
 use std::io::Write;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixDatagram;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
@@ -545,18 +546,19 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let mut options = vec![
-        MountOption::RO,
-        MountOption::NoAtime,
-        MountOption::NoSuid,
-        MountOption::NoDev,
-        MountOption::FSName(args.archive.display().to_string()),
-        MountOption::Subtype("zipfs".to_string()),
-        MountOption::DefaultPermissions,
-    ];
-    if config.auto_unmount {
-        options.push(MountOption::AutoUnmount);
-    }
+    let (options, required_flags) = mount_options(&args.archive, &config);
+    // This must occur before the mount. After it, a lookup of this path waits
+    // for an answer from this process, which does not serve until later.
+    let real_mountpoint = if required_flags.is_empty() {
+        None
+    } else {
+        Some(fs::canonicalize(&args.mountpoint).map_err(|e| {
+            ContextError::new(
+                format!("cannot resolve mount point '{}'", args.mountpoint.display()),
+                e,
+            )
+        })?)
+    };
 
     let mut session_config = fuser::Config::default();
     session_config.mount_options = options;
@@ -590,6 +592,10 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             e,
         )
     })?;
+    if let Some(real_mountpoint) = &real_mountpoint {
+        // An error here drops the session, which removes the mount.
+        check_mount_flags(real_mountpoint, &required_flags)?;
+    }
     // The mount answered the kernel's init request inside `Session::new`, so
     // it is ready to serve. Detaching here, and no earlier, is what lets the
     // caller treat this process leaving as the mount being usable.
@@ -617,6 +623,76 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         )
     })?;
     Ok(())
+}
+
+/// The options for the mount, and the flags that the mount must get.
+fn mount_options(archive: &Path, config: &Config) -> (Vec<MountOption>, Vec<&'static str>) {
+    let mut options = vec![
+        MountOption::RO,
+        MountOption::NoAtime,
+        MountOption::NoSuid,
+        MountOption::NoDev,
+        MountOption::FSName(archive.display().to_string()),
+        MountOption::Subtype("zipfs".to_string()),
+        MountOption::DefaultPermissions,
+    ];
+    if config.auto_unmount {
+        options.push(MountOption::AutoUnmount);
+    }
+    let mut required_flags = Vec::new();
+    if config.noexec {
+        options.push(MountOption::NoExec);
+        required_flags.push("noexec");
+    }
+    if config.nosymfollow {
+        options.push(MountOption::CUSTOM("nosymfollow".to_string()));
+        required_flags.push("nosymfollow");
+    }
+    (options, required_flags)
+}
+
+/// Confirms that the mount has each flag that was asked for.
+///
+/// `fusermount3` can report success and not apply a flag. For example, a build
+/// against old kernel headers treats `nosymfollow` as no flag. A mount that
+/// seems to have a protection and does not is worse than no mount.
+fn check_mount_flags(mountpoint: &Path, flags: &[&str]) -> Result<(), String> {
+    let mountinfo = fs::read("/proc/self/mountinfo")
+        .map_err(|e| format!("cannot confirm the flags of the mount: {e}"))?;
+    let applied = mount_flags(&mountinfo, mountpoint.as_os_str().as_bytes())
+        .ok_or_else(|| format!("cannot find the mount at '{}'", mountpoint.display()))?;
+    for flag in flags {
+        if !applied.split(|&b| b == b',').any(|f| f == flag.as_bytes()) {
+            return Err(format!(
+                "the mount at '{}' did not get the '{flag}' flag",
+                mountpoint.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The flags of the mount at a path, from the text of `/proc/self/mountinfo`.
+///
+/// The last match is used, because a later mount covers an earlier mount at the
+/// same path.
+fn mount_flags<'a>(mountinfo: &'a [u8], mountpoint: &[u8]) -> Option<&'a [u8]> {
+    let mut escaped = Vec::with_capacity(mountpoint.len());
+    for &byte in mountpoint {
+        match byte {
+            b' ' => escaped.extend_from_slice(b"\\040"),
+            b'\t' => escaped.extend_from_slice(b"\\011"),
+            b'\n' => escaped.extend_from_slice(b"\\012"),
+            b'\\' => escaped.extend_from_slice(b"\\134"),
+            _ => escaped.push(byte),
+        }
+    }
+    mountinfo.split(|&b| b == b'\n').rev().find_map(|line| {
+        let mut fields = line.split(|&b| b == b' ');
+        let path = fields.nth(4)?;
+        let flags = fields.next()?;
+        (path == escaped.as_slice()).then_some(flags)
+    })
 }
 
 /// The byte the child sends once the mount is its own to serve.
@@ -824,6 +900,40 @@ fn report(stats: &zipfs::index::BuildStats) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const MOUNTINFO: &[u8] = b"\
+22 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw
+40 22 0:50 / /mnt/first ro,nosuid,nodev,noatime shared:2 - fuse.zipfs a.zip ro
+41 22 0:51 / /mnt/a\\040b\\134c ro,nosuid,noexec shared:3 - fuse.zipfs b.zip ro
+42 40 0:52 / /mnt/first ro,nosuid,nodev,noexec,nosymfollow shared:4 - fuse.zipfs c.zip ro
+";
+
+    #[test]
+    fn the_flags_of_a_mount_come_from_its_line() {
+        assert_eq!(
+            mount_flags(MOUNTINFO, b"/"),
+            Some(b"rw,relatime".as_slice())
+        );
+        assert_eq!(mount_flags(MOUNTINFO, b"/mnt/none"), None);
+        // The name of a flag in another column is not a match.
+        assert_eq!(mount_flags(MOUNTINFO, b"ro"), None);
+    }
+
+    #[test]
+    fn the_last_mount_at_a_path_covers_the_others() {
+        assert_eq!(
+            mount_flags(MOUNTINFO, b"/mnt/first"),
+            Some(b"ro,nosuid,nodev,noexec,nosymfollow".as_slice())
+        );
+    }
+
+    #[test]
+    fn a_path_is_compared_in_its_escaped_form() {
+        assert_eq!(
+            mount_flags(MOUNTINFO, b"/mnt/a b\\c"),
+            Some(b"ro,nosuid,noexec".as_slice())
+        );
+    }
 
     #[test]
     fn syslog_sends_each_line_as_a_datagram() {

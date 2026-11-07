@@ -315,10 +315,13 @@ pub fn settings_help() -> String {
     out
 }
 
-/// Options that the kernel, `mount(8)` or `fusermount3` acts on by itself.
+/// Options that change nothing on this mount, or that `mount(8)` acts on.
 ///
-/// The mount gets these whether or not this program looks at them, so accepting
-/// them without comment is what lets an fstab line work.
+/// The mount is always read-only, with `noatime`, `nosuid` and `nodev`, so
+/// options for access times and synchronous writes do not apply, and `suid` and
+/// `dev` do not make it less strict. Accepting them without comment is what lets
+/// an fstab line work. An option that must reach the mount does not go here: see
+/// [`apply_one`].
 const IGNORED: &[&str] = &[
     "ro",
     "atime",
@@ -333,8 +336,6 @@ const IGNORED: &[&str] = &[
     "nodev",
     "suid",
     "nosuid",
-    "exec",
-    "noexec",
     "sync",
     "async",
     "dirsync",
@@ -354,9 +355,12 @@ const IGNORED: &[&str] = &[
     "default_permissions",
 ];
 
-/// Options that are ignored for the same reason and that carry a value.
+/// Options with a value that this program does not send to the mount.
 ///
-/// These are matched by name, after the value has been taken off.
+/// This program sets `subtype` and `fsname` itself, and `comment` is for
+/// `mount(8)`. The security contexts are dropped, because a context can contain
+/// commas and the list is split at each comma. These are matched by name, after
+/// the value has been taken off.
 const IGNORED_WITH_VALUE: &[&str] = &[
     "subtype",
     "fsname",
@@ -377,8 +381,8 @@ const IGNORED_PREFIX: &str = "x-";
 ///
 /// Returns a message for an option that is understood but cannot be honoured,
 /// or whose value does not parse. An option that is not recognised is reported
-/// through the log and does not stop the mount, because a mount option this
-/// program has never heard of is normally one the kernel deals with.
+/// through the log and does not stop the mount, so that an fstab line continues
+/// to work. The mount does not get that option.
 pub fn apply(config: &mut Config, spec: &OsStr) -> Result<(), String> {
     let text = spec
         .to_str()
@@ -419,6 +423,22 @@ fn apply_one(config: &mut Config, opt: &str) -> Result<(), String> {
                     .map_err(|reason| format!("mount option '{key}={value}': {reason}"))
             }
         };
+    }
+    // These are flags on the mount, and only this program can ask for them. As
+    // with mount(8), the last one in the list has effect.
+    let mount_flag = match key {
+        "noexec" => Some((&mut config.noexec, true)),
+        "exec" => Some((&mut config.noexec, false)),
+        "nosymfollow" => Some((&mut config.nosymfollow, true)),
+        "symfollow" => Some((&mut config.nosymfollow, false)),
+        _ => None,
+    };
+    if let Some((field, on)) = mount_flag {
+        if value.is_some() {
+            return Err(format!("mount option '{key}' takes no value"));
+        }
+        *field = on;
+        return Ok(());
     }
     // What is left belongs to the mount rather than to this program.
     match key {
@@ -693,8 +713,32 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_option_is_left_to_the_kernel() {
+    fn an_unknown_option_does_not_stop_the_mount() {
         parse("something_new").unwrap();
+    }
+
+    #[test]
+    fn a_mount_flag_is_kept_and_the_last_one_has_effect() {
+        let config = parse("rw").unwrap();
+        assert!(!config.noexec);
+        assert!(!config.nosymfollow);
+
+        let config = parse("noexec,nosymfollow").unwrap();
+        assert!(config.noexec);
+        assert!(config.nosymfollow);
+
+        let config = parse("noexec,exec,nosymfollow,symfollow").unwrap();
+        assert!(!config.noexec);
+        assert!(!config.nosymfollow);
+
+        assert!(parse("exec,noexec").unwrap().noexec);
+        assert!(parse("symfollow,nosymfollow").unwrap().nosymfollow);
+    }
+
+    #[test]
+    fn a_mount_flag_takes_no_value() {
+        parse("noexec=1").unwrap_err();
+        parse("nosymfollow=1").unwrap_err();
     }
 
     #[test]

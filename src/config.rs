@@ -56,6 +56,10 @@ pub struct Config {
     /// FUSE refuses this unless the mount is visible to more than its owner,
     /// so it requires `allow_other`.
     pub auto_unmount: bool,
+    /// Prevent programs on the mount from running.
+    pub noexec: bool,
+    /// Prevent the kernel from following symbolic links on the mount.
+    pub nosymfollow: bool,
 }
 
 impl Default for Config {
@@ -81,6 +85,8 @@ impl Default for Config {
             allow_other: false,
             allow_root: false,
             auto_unmount: false,
+            noexec: false,
+            nosymfollow: false,
         }
     }
 }
