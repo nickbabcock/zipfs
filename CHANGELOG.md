@@ -15,6 +15,12 @@
 
 - Log to syslog after the process detaches. Before, these logs were lost.
 
+### Fixed
+
+- Do not end a read early when the decompressor consumed all of its input but
+  still held output. Before, a file could read short with no error, because
+  the checksum is only examined at the end of an entry.
+
 ## 0.1.2 - 2026-09-07
 
 ### Added

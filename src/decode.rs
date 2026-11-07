@@ -277,11 +277,9 @@ impl Pump<'_> {
         }
         loop {
             let input = self.src.fill_buf()?;
-            if input.is_empty() {
-                // Stored entries never announce an end; they simply run out.
-                *self.finished = true;
-                return Ok(0);
-            }
+            let input_empty = input.is_empty();
+            // A codec can hold output after it consumes all of its input, so
+            // an empty input does not show that the stream ended.
             let step = self.codec.step(input, out)?;
             self.src.consume(step.consumed);
             if step.produced > 0 {
@@ -299,6 +297,11 @@ impl Pump<'_> {
                 return Ok(0);
             }
             if step.consumed == 0 {
+                if input_empty {
+                    // Stored entries never announce an end; they simply run out.
+                    *self.finished = true;
+                    return Ok(0);
+                }
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "decompressor stalled",
