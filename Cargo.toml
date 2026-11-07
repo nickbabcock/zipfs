@@ -9,6 +9,13 @@ repository = "https://github.com/nickbabcock/zipfs"
 keywords = ["archive", "filesystem", "fuse", "zip"]
 categories = ["command-line-utilities", "compression", "filesystem"]
 
+[package.metadata.release]
+pre-release-replacements = [
+  { file = "CHANGELOG.md", search = "## Unreleased", replace = "## Unreleased\n\n## {{version}} - {{date}}", exactly = 1 },
+  { file = "man/zipfs.1", search = '\.TH ZIPFS 1 "[0-9-]+"', replace = '.TH ZIPFS 1 "{{date}}"', exactly = 1 },
+  { file = "README.md", search = 'zipfs_[0-9.]+_amd64\.deb', replace = "zipfs_{{version}}_amd64.deb", exactly = 1 },
+]
+
 [lints.rust]
 ambiguous_negative_literals = "warn"
 missing_debug_implementations = "warn"
