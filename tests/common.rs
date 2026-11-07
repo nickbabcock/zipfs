@@ -95,6 +95,30 @@ pub fn archive(entries: &[Entry]) -> Vec<u8> {
     out
 }
 
+/// Writes an archive with one deflate entry that holds a stream made by hand.
+///
+/// # Panics
+///
+/// Panics when the fixture archive cannot be written.
+#[must_use]
+pub fn archive_with_deflate_stream(path: &str, stream: &[u8], body: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut writer = ZipArchiveWriter::new(&mut out);
+    let (mut file, config) = writer
+        .new_file(path)
+        .compression_method(CompressionMethod::DEFLATE)
+        .start()
+        .unwrap();
+    // The wrapper only records the size and the checksum of `body`.
+    let mut data = config.wrap(std::io::sink());
+    data.write_all(body).unwrap();
+    let (_, descriptor) = data.finish().unwrap();
+    file.write_all(stream).unwrap();
+    file.finish(descriptor).unwrap();
+    writer.finish().unwrap();
+    out
+}
+
 /// An archive written to a temporary file, removed when it goes out of scope.
 #[derive(Debug)]
 pub struct TempArchive {

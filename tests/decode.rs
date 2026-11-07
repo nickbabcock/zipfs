@@ -2,7 +2,9 @@
 
 mod common;
 
-use common::{Entry, TempArchive, archive, compressible, pseudo_random};
+use common::{
+    Entry, TempArchive, archive, archive_with_deflate_stream, compressible, pseudo_random,
+};
 use rawzip::CompressionMethod;
 use std::sync::Arc;
 use zipfs::config::SKIP_BUFFER;
@@ -96,6 +98,41 @@ fn methods() -> Vec<(&'static str, CompressionMethod)> {
     #[cfg(not(feature = "zstd"))]
     {
         vec![("stored", STORE), ("deflated", DEFLATE)]
+    }
+}
+
+/// A codec can consume all of its input before it delivers all of its output.
+/// Thus an empty input must not end the read.
+#[test]
+fn a_read_that_stops_inside_the_last_match_does_not_lose_the_tail() {
+    // One fixed block: the literal 0xff, a match of 258 at distance 1, and the
+    // end of the block. The last byte holds the last bit of the distance and
+    // all of the end code, so the decoder takes that byte before the match.
+    const STREAM: [u8; 4] = [0xfb, 0x3f, 0x0a, 0x00];
+    let body = [0xffu8; 259];
+    let temp = TempArchive::new(
+        "last-match",
+        &archive_with_deflate_stream("f", &STREAM, &body),
+    );
+    let archive = Archive::open(&temp.path).unwrap();
+    let (index, _) = zipfs::index::build(&archive).unwrap();
+    let ino = index.lookup(ROOT_INO, b"f").unwrap();
+    let meta = index.meta(index.node(ino).unwrap()).unwrap();
+    let loc = EntryLocation {
+        data_start: archive.data_start(meta).unwrap(),
+        compressed_size: meta.compressed_size,
+        method: meta.method().unwrap(),
+    };
+
+    for tail in 1..body.len() {
+        let mut decoder = PositionedDecoder::new(archive.reader(), loc, parts(loc.method), true);
+        let mut got = [0u8; 259];
+        let (head, rest) = got.split_at_mut(body.len() - tail);
+        assert_eq!(decoder.read_at(0, head, meta).unwrap(), head.len());
+        let offset = head.len() as u64;
+        assert_eq!(decoder.read_at(offset, rest, meta).unwrap(), tail);
+        assert_eq!(got, body);
+        assert_eq!(meta.verify_state(), VERIFY_OK);
     }
 }
 
