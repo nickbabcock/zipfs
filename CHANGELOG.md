@@ -10,6 +10,7 @@
   rename or replacement of the archive is not a change, because the mount
   keeps the file that it opened. Over CIFS this is best effort, and over NFS a
   change can be found up to 60 seconds late.
+- Read Deflate64 entries, which Windows Explorer can write.
 
 ### Changed
 

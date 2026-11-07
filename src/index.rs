@@ -39,6 +39,7 @@ pub enum Method {
     Deflate = 1,
     #[cfg(feature = "zstd")]
     Zstd = 2,
+    Deflate64 = 3,
 }
 
 impl Method {
@@ -48,6 +49,7 @@ impl Method {
         match rawzip::CompressionMethod::new(raw) {
             rawzip::CompressionMethod::STORE => Some(Method::Store),
             rawzip::CompressionMethod::DEFLATE => Some(Method::Deflate),
+            rawzip::CompressionMethod::DEFLATE64 => Some(Method::Deflate64),
             #[cfg(feature = "zstd")]
             rawzip::CompressionMethod::ZSTD | rawzip::CompressionMethod::ZSTD_DEPRECATED => {
                 Some(Method::Zstd)

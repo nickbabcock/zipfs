@@ -6,7 +6,7 @@
 mod common;
 
 use common::{
-    Entry, TempArchive, archive, archive_with_deflate_stream, compressible, deflate, pseudo_random,
+    Entry, TempArchive, archive, archive_with_stream, compressible, deflate, pseudo_random,
 };
 use rawzip::CompressionMethod;
 use std::fs;
@@ -19,6 +19,7 @@ use zipfs::{Archive, Config, ZipFs};
 
 const STORE: CompressionMethod = CompressionMethod::STORE;
 const DEFLATE: CompressionMethod = CompressionMethod::DEFLATE;
+const DEFLATE64: CompressionMethod = CompressionMethod::DEFLATE64;
 #[cfg(feature = "zstd")]
 const ZSTD: CompressionMethod = CompressionMethod::ZSTD;
 
@@ -113,6 +114,7 @@ fn sample_entries() -> Vec<Entry> {
     let entries = vec![
         Entry::file("stored.bin", pseudo_random(300_000, 3), STORE),
         Entry::file("deflated.txt", compressible(400_000), DEFLATE),
+        Entry::file("deflated64.txt", compressible(400_000), DEFLATE64),
         Entry::file("empty", Vec::new(), STORE),
         Entry::file("dir/nested/leaf.txt", "leaf", STORE),
         Entry::file("dir/beta", "b", STORE),
@@ -144,6 +146,7 @@ fn a_directory_lists_its_entries_in_order() {
         {
             vec![
                 "deflated.txt",
+                "deflated64.txt",
                 "dir",
                 "empty",
                 "link",
@@ -156,6 +159,7 @@ fn a_directory_lists_its_entries_in_order() {
         {
             vec![
                 "deflated.txt",
+                "deflated64.txt",
                 "dir",
                 "empty",
                 "link",
@@ -313,7 +317,7 @@ fn a_stream_shorter_than_its_entry_fails_the_read() {
         ("early", deflate(&body[..100_000])),
     ];
     for (name, stream) in streams {
-        let bytes = archive_with_deflate_stream("f", &stream, &body);
+        let bytes = archive_with_stream("f", DEFLATE, &stream, &body);
         let mount = Mount::from_bytes(name, &bytes, &Config::default());
 
         let error = fs::read(mount.path("f")).unwrap_err();

@@ -51,7 +51,7 @@ archive is not a change, because the mount keeps the file that it opened.
 `man zipfs` tells how zipfs finds a change, and what the limits are over CIFS
 and NFS.
 
-- Supported compression methods: stored, deflate and zstd.
+- Supported compression methods: stored, deflate, Deflate64 and zstd.
 - Paths that are absolute, that contain `..`, or that hold a NUL byte are
   skipped, and the count is reported at mount.
 - Where two entries claim one path, the first is kept. Where one path is a file

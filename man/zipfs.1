@@ -25,7 +25,7 @@ through FUSE. The files in the archive are then read like any other files.
 Nothing is written to disk: each read decompresses only the bytes it needs,
 and the kernel keeps the pages it has already seen.
 .PP
-The mount is read\-only. Stored, deflate and zstd entries can be read.
+The mount is read\-only. Stored, deflate, Deflate64 and zstd entries can be read.
 Entries that are encrypted, or that use another compression method, are
 counted at mount time and cannot be read.
 .PP

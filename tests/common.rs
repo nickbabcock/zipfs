@@ -88,6 +88,14 @@ pub fn archive(entries: &[Entry]) -> Vec<u8> {
                 encoder.finish().unwrap();
                 file.finish(descriptor).unwrap();
             }
+            CompressionMethod::DEFLATE64 => {
+                // The wrapper only records the size and the checksum of the body.
+                let mut data = config.wrap(std::io::sink());
+                data.write_all(&entry.body).unwrap();
+                let (_, descriptor) = data.finish().unwrap();
+                file.write_all(&stored_blocks(&entry.body)).unwrap();
+                file.finish(descriptor).unwrap();
+            }
             other => panic!("the fixture writer cannot produce method {other:?}"),
         }
     }
@@ -108,18 +116,48 @@ pub fn deflate(body: &[u8]) -> Vec<u8> {
     encoder.finish().unwrap()
 }
 
-/// Writes an archive with one deflate entry that holds a stream made by hand.
+/// Encodes `body` as stored blocks, which deflate and Deflate64 read the same.
+///
+/// No encoder for Deflate64 is available to the tests. This gives a valid stream
+/// for any body, but it does not use the features that only Deflate64 has.
+///
+/// # Panics
+///
+/// Panics when a block is longer than a stored block can be, which cannot occur.
+#[must_use]
+pub fn stored_blocks(body: &[u8]) -> Vec<u8> {
+    let mut chunks = body.chunks(usize::from(u16::MAX)).peekable();
+    let mut out = Vec::with_capacity(body.len() + 5);
+    if chunks.peek().is_none() {
+        out.extend_from_slice(&[1, 0, 0, 0xff, 0xff]);
+    }
+    while let Some(chunk) = chunks.next() {
+        let len = u16::try_from(chunk.len()).unwrap();
+        out.push(u8::from(chunks.peek().is_none()));
+        out.extend_from_slice(&len.to_le_bytes());
+        out.extend_from_slice(&(!len).to_le_bytes());
+        out.extend_from_slice(chunk);
+    }
+    out
+}
+
+/// Writes an archive with one entry that holds a stream made by hand.
 ///
 /// # Panics
 ///
 /// Panics when the fixture archive cannot be written.
 #[must_use]
-pub fn archive_with_deflate_stream(path: &str, stream: &[u8], body: &[u8]) -> Vec<u8> {
+pub fn archive_with_stream(
+    path: &str,
+    method: CompressionMethod,
+    stream: &[u8],
+    body: &[u8],
+) -> Vec<u8> {
     let mut out = Vec::new();
     let mut writer = ZipArchiveWriter::new(&mut out);
     let (mut file, config) = writer
         .new_file(path)
-        .compression_method(CompressionMethod::DEFLATE)
+        .compression_method(method)
         .start()
         .unwrap();
     // The wrapper only records the size and the checksum of `body`.

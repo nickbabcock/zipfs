@@ -3,7 +3,8 @@
 mod common;
 
 use common::{
-    Entry, TempArchive, archive, archive_with_deflate_stream, compressible, deflate, pseudo_random,
+    Entry, TempArchive, archive, archive_with_stream, compressible, deflate, pseudo_random,
+    stored_blocks,
 };
 use rawzip::CompressionMethod;
 use std::sync::Arc;
@@ -15,6 +16,7 @@ use zipfs::{Archive, Config};
 
 const STORE: CompressionMethod = CompressionMethod::STORE;
 const DEFLATE: CompressionMethod = CompressionMethod::DEFLATE;
+const DEFLATE64: CompressionMethod = CompressionMethod::DEFLATE64;
 #[cfg(feature = "zstd")]
 const ZSTD: CompressionMethod = CompressionMethod::ZSTD;
 
@@ -93,11 +95,20 @@ fn read_all(
 fn methods() -> Vec<(&'static str, CompressionMethod)> {
     #[cfg(feature = "zstd")]
     {
-        vec![("stored", STORE), ("deflated", DEFLATE), ("zstd", ZSTD)]
+        vec![
+            ("stored", STORE),
+            ("deflated", DEFLATE),
+            ("deflated64", DEFLATE64),
+            ("zstd", ZSTD),
+        ]
     }
     #[cfg(not(feature = "zstd"))]
     {
-        vec![("stored", STORE), ("deflated", DEFLATE)]
+        vec![
+            ("stored", STORE),
+            ("deflated", DEFLATE),
+            ("deflated64", DEFLATE64),
+        ]
     }
 }
 
@@ -112,7 +123,7 @@ fn a_read_that_stops_inside_the_last_match_does_not_lose_the_tail() {
     let body = [0xffu8; 259];
     let temp = TempArchive::new(
         "last-match",
-        &archive_with_deflate_stream("f", &STREAM, &body),
+        &archive_with_stream("f", DEFLATE, &STREAM, &body),
     );
     let archive = Archive::open(&temp.path).unwrap();
     let (index, _) = zipfs::index::build(&archive).unwrap();
@@ -134,6 +145,85 @@ fn a_read_that_stops_inside_the_last_match_does_not_lose_the_tail() {
         assert_eq!(got, body);
         assert_eq!(meta.verify_state(), VERIFY_OK);
     }
+}
+
+/// A stream that is valid only as Deflate64, and the bytes that it decodes to.
+fn far_and_long_matches() -> (Vec<u8>, Vec<u8>) {
+    // One final fixed block that holds two matches:
+    // - Length code 285 and distance code 31 give length 65,538 at distance 65,536.
+    // - Length code 257 and distance code 30 give length 3 at distance 32,769.
+    // Deflate has no distance codes 30 and 31, and no extra bits for length code 285.
+    const LAST_BLOCK: [u8; 10] = [0x1b, 0xfd, 0xff, 0xff, 0xff, 0x3f, 0xf0, 0x01, 0x00, 0x00];
+
+    // A prefix larger than the 32 KiB that deflate can reach.
+    let mut body = pseudo_random(70_000, 17);
+    let mut stream = stored_blocks(&body);
+    // Clear the final bit of the second stored block, because another block follows.
+    stream[5 + usize::from(u16::MAX)] = 0;
+    stream.extend_from_slice(&LAST_BLOCK);
+    copy_match(&mut body, 65_538, 65_536);
+    copy_match(&mut body, 3, 32_769);
+    (stream, body)
+}
+
+fn copy_match(body: &mut Vec<u8>, length: usize, distance: usize) {
+    for _ in 0..length {
+        body.push(body[body.len() - distance]);
+    }
+}
+
+fn single_entry(temp: &TempArchive) -> (Archive, Index) {
+    let archive = Archive::open(&temp.path).unwrap();
+    let (index, _) = zipfs::index::build(&archive).unwrap();
+    (archive, index)
+}
+
+#[test]
+fn deflate64_reads_matches_that_deflate_cannot_express() {
+    let (stream, body) = far_and_long_matches();
+    let temp = TempArchive::new(
+        "far-long",
+        &archive_with_stream("f", DEFLATE64, &stream, &body),
+    );
+    let (archive, index) = single_entry(&temp);
+    let ino = index.lookup(ROOT_INO, b"f").unwrap();
+    let meta = index.meta(index.node(ino).unwrap()).unwrap();
+    let loc = EntryLocation {
+        data_start: archive.data_start(meta).unwrap(),
+        compressed_size: meta.compressed_size,
+        method: meta.method().unwrap(),
+    };
+    assert_eq!(loc.method, Method::Deflate64);
+
+    // The output sizes put the end of a read inside the long match, and the
+    // second pass finds any window or table that a rewind leaves behind.
+    let mut decoder = PositionedDecoder::new(archive.reader(), loc, parts(loc.method), true);
+    for step in [1, 4096, 131_072, body.len() + 1] {
+        assert!(read_all(&mut decoder, meta, step) == body, "step {step}");
+        assert_eq!(meta.verify_state(), VERIFY_OK);
+        decoder.reinit(loc);
+    }
+}
+
+#[test]
+fn deflate64_reports_an_invalid_stream() {
+    // The first block has the reserved block type 3.
+    let temp = TempArchive::new(
+        "reserved",
+        &archive_with_stream("f", DEFLATE64, &[0x07], b"body"),
+    );
+    let (archive, index) = single_entry(&temp);
+    let ino = index.lookup(ROOT_INO, b"f").unwrap();
+    let meta = index.meta(index.node(ino).unwrap()).unwrap();
+    let loc = EntryLocation {
+        data_start: archive.data_start(meta).unwrap(),
+        compressed_size: meta.compressed_size,
+        method: meta.method().unwrap(),
+    };
+    let mut decoder = PositionedDecoder::new(archive.reader(), loc, parts(loc.method), true);
+    let mut got = [0u8; 4];
+    let error = decoder.read_at(0, &mut got, meta).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
 }
 
 #[test]
@@ -342,13 +432,16 @@ fn a_final_decompressor_error_marks_verification_bad() {
 fn a_stream_shorter_than_its_entry_fails_the_read() {
     let body = pseudo_random(200_000, 29);
     let whole = deflate(&body);
+    let stored = stored_blocks(&body);
     let streams = [
-        ("cut", whole[..whole.len() / 2].to_vec()),
-        ("early", deflate(&body[..100_000])),
+        ("cut", DEFLATE, whole[..whole.len() / 2].to_vec()),
+        ("early", DEFLATE, deflate(&body[..100_000])),
+        ("cut64", DEFLATE64, stored[..stored.len() / 2].to_vec()),
+        ("early64", DEFLATE64, stored_blocks(&body[..100_000])),
     ];
-    for (name, stream) in streams {
+    for (name, method, stream) in streams {
         for verify in [true, false] {
-            let temp = TempArchive::new(name, &archive_with_deflate_stream("f", &stream, &body));
+            let temp = TempArchive::new(name, &archive_with_stream("f", method, &stream, &body));
             let archive = Archive::open(&temp.path).unwrap();
             let (index, _) = zipfs::index::build(&archive).unwrap();
             let ino = index.lookup(ROOT_INO, b"f").unwrap();

@@ -6,6 +6,7 @@
 //! straight into the reply buffer with no copy in between.
 
 mod deflate;
+mod deflate64;
 #[cfg(feature = "zstd")]
 mod zstd;
 
@@ -61,6 +62,7 @@ pub enum Codec {
     /// Stored entries are copied through unchanged.
     Store(Store),
     Deflate(deflate::Deflate),
+    Deflate64(deflate64::Deflate64),
     #[cfg(feature = "zstd")]
     Zstd(zstd::Zstd),
 }
@@ -71,6 +73,7 @@ impl Codec {
         match method {
             Method::Store => Codec::Store(Store),
             Method::Deflate => Codec::Deflate(deflate::Deflate::new()),
+            Method::Deflate64 => Codec::Deflate64(deflate64::Deflate64::new()),
             #[cfg(feature = "zstd")]
             Method::Zstd => Codec::Zstd(zstd::Zstd::new()),
         }
@@ -82,6 +85,7 @@ impl Codec {
         match self {
             Codec::Store(_) => Method::Store,
             Codec::Deflate(_) => Method::Deflate,
+            Codec::Deflate64(_) => Method::Deflate64,
             #[cfg(feature = "zstd")]
             Codec::Zstd(_) => Method::Zstd,
         }
@@ -91,6 +95,7 @@ impl Codec {
         match self {
             Codec::Store(c) => c,
             Codec::Deflate(c) => c,
+            Codec::Deflate64(c) => c,
             #[cfg(feature = "zstd")]
             Codec::Zstd(c) => c,
         }
