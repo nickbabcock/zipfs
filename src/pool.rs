@@ -23,7 +23,7 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-const METHODS: usize = 3;
+const METHODS: usize = 4;
 
 #[derive(Debug, Default)]
 struct CoreStore {
