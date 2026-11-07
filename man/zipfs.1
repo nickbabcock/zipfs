@@ -188,6 +188,25 @@ An fstab line then reads:
 .EE
 .RE
 .PP
+The mount is always
+.BR ro ,
+.BR nosuid ,
+.B nodev
+and
+.BR noatime .
+With
+.B \-o
+or in an fstab line,
+.B noexec
+and
+.B nosymfollow
+are also applied to the mount. The mount fails if it does not get a flag that
+was asked for. Some systems do not permit
+.BR nosymfollow :
+libfuse 3.16 and earlier do not support it, and an AppArmor profile for
+.B fusermount3
+can refuse it.
+.PP
 Started under a name that begins with
 .BR mount. ,
 the short options take their

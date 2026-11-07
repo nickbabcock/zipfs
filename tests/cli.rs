@@ -196,3 +196,104 @@ fn asking_for_a_writable_mount_stops_the_mount() {
         "unexpected message: {message}"
     );
 }
+
+/// The flags that the kernel reports for a mount.
+fn kernel_flags(mountpoint: &Path) -> String {
+    let path = std::fs::canonicalize(mountpoint)
+        .unwrap()
+        .display()
+        .to_string()
+        .replace(' ', "\\040");
+    std::fs::read_to_string("/proc/self/mountinfo")
+        .unwrap()
+        .lines()
+        .rev()
+        .map(|line| line.split(' ').collect::<Vec<_>>())
+        .find(|fields| fields[4] == path)
+        .map(|fields| fields[5].to_string())
+        .expect("the mount is in mountinfo")
+}
+
+#[test]
+fn the_noexec_option_reaches_the_mount() {
+    if !fuse_available() {
+        eprintln!("skipping: no /dev/fuse or fusermount3");
+        return;
+    }
+    let temp = TempArchive::new(
+        "cli-noexec",
+        &archive(&[Entry::file(
+            "hello.txt",
+            b"ready".to_vec(),
+            CompressionMethod::STORE,
+        )]),
+    );
+
+    // The space makes sure that the path is found in its escaped form.
+    for (name, options, expected) in [
+        ("no exec", "noexec", true),
+        ("exec", "noexec,exec", false),
+        ("default", "ro", false),
+    ] {
+        let dir = MountDir::new(name);
+        let out = Command::new(ZIPFS)
+            .arg(&temp.path)
+            .arg(&dir.path)
+            .args(["-o", options])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "mount failed with '{options}': {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let flags = kernel_flags(&dir.path);
+        assert_eq!(
+            flags.split(',').any(|f| f == "noexec"),
+            expected,
+            "'{options}' gave {flags}"
+        );
+    }
+}
+
+#[test]
+fn the_nosymfollow_option_is_applied_or_stops_the_mount() {
+    if !fuse_available() {
+        eprintln!("skipping: no /dev/fuse or fusermount3");
+        return;
+    }
+    let temp = TempArchive::new(
+        "cli-nosymfollow",
+        &archive(&[
+            Entry::file("hello.txt", b"ready".to_vec(), CompressionMethod::STORE),
+            Entry::symlink("link", "hello.txt"),
+        ]),
+    );
+    let dir = MountDir::new("nosymfollow");
+
+    let out = Command::new(ZIPFS)
+        .arg(&temp.path)
+        .arg(&dir.path)
+        .args(["-o", "nosymfollow"])
+        .output()
+        .unwrap();
+    if !out.status.success() {
+        // An old fusermount3 or a security profile can refuse this flag. That
+        // is correct, if nothing stays mounted.
+        eprintln!(
+            "this system refused nosymfollow: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(!dir.path.join("hello.txt").exists());
+        return;
+    }
+    let flags = kernel_flags(&dir.path);
+    assert!(flags.split(',').any(|f| f == "nosymfollow"), "gave {flags}");
+    // The target can be read, but the link cannot be followed.
+    assert_eq!(
+        std::fs::read_link(dir.path.join("link")).unwrap(),
+        Path::new("hello.txt")
+    );
+    let error = std::fs::read(dir.path.join("link")).unwrap_err();
+    assert_eq!(error.raw_os_error(), Some(libc::ELOOP));
+}
