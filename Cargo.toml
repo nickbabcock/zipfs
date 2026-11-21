@@ -66,7 +66,7 @@ multiple_crate_versions = "allow"
 # default-features = false keeps this on the pure-Rust mount path (fusermount3),
 # so no libfuse C headers are necessary.
 fuser = { version = "0.18", default-features = false }
-rawzip = "0.5"
+rawzip = "0.5.3"
 # The zlib-rs backend is pure Rust and gives the fastest inflate flate2 offers.
 flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
 # flate2 cannot read Deflate64.

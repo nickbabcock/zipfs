@@ -72,8 +72,7 @@ impl Archive {
     ///
     /// Returns an error when the requested bytes cannot be read from the file.
     pub fn read_at(&self, buf: &mut [u8], offset: u64) -> std::io::Result<()> {
-        // rawzip's `Arc` wrapper does not forward `read_exact_at`.
-        self.reader.as_ref().read_exact_at(buf, offset)
+        self.reader.read_exact_at(buf, offset)
     }
 
     /// Where an entry's compressed bytes begin.
