@@ -78,9 +78,7 @@ impl BufRead for BufSource {
             let want = usize::try_from(remaining)
                 .unwrap_or(usize::MAX)
                 .min(self.buf.len());
-            // rawzip's `Arc` wrapper does not forward `read_exact_at`.
             self.reader
-                .as_ref()
                 .read_exact_at(&mut self.buf[..want], self.start + self.consumed)?;
             self.filled = want;
         }
