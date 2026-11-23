@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.1 - 2026-11-23
+
 ### Fixed
 
 - Do not unmount the mount point again after something else unmounts it.
