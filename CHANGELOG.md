@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fixed
+
+- Do not unmount the mount point again after something else unmounts it.
+  Before, the second unmount could remove another mount at the same path, such
+  as a systemd automount. The fix is in fuser 0.19.
+
 ## 0.2.0 - 2026-11-07
 
 ### Added
