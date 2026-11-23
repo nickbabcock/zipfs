@@ -6,8 +6,10 @@ mod common;
 
 use common::{Entry, TempArchive, archive};
 use rawzip::CompressionMethod;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
 
 const ZIPFS: &str = env!("CARGO_BIN_EXE_zipfs");
 
@@ -296,4 +298,110 @@ fn the_nosymfollow_option_is_applied_or_stops_the_mount() {
     );
     let error = std::fs::read(dir.path.join("link")).unwrap_err();
     assert_eq!(error.raw_os_error(), Some(libc::ELOOP));
+}
+
+/// A `zipfs` process that does not outlive its test.
+struct Served(Child);
+
+impl Drop for Served {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// A directory of test files, removed however the test ends.
+struct ScratchDir(PathBuf);
+
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Polls until the condition is true or ten seconds pass.
+fn wait_until(mut condition: impl FnMut() -> bool) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        if condition() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    false
+}
+
+/// A second unmount of the same path takes away whatever is below, such as the
+/// autofs mount of a systemd automount.
+#[test]
+fn an_external_unmount_is_not_repeated() {
+    if !fuse_available() {
+        eprintln!("skipping: no /dev/fuse or fusermount3");
+        return;
+    }
+    if std::fs::metadata("/proc/self").unwrap().uid() == 0 {
+        eprintln!("skipping: root unmounts without fusermount, so there is no call to record");
+        return;
+    }
+    let real = fusermount().unwrap();
+    let temp = TempArchive::new(
+        "cli-external",
+        &archive(&[Entry::file("hello.txt", "here", CompressionMethod::STORE)]),
+    );
+
+    // A stand-in that records each call and passes it on.
+    let scratch =
+        ScratchDir(std::env::temp_dir().join(format!("zipfs-cli-{}-recorder", std::process::id())));
+    std::fs::create_dir_all(&scratch.0).unwrap();
+    let log = scratch.0.join("calls");
+    for name in ["fusermount3", "fusermount"] {
+        let script = scratch.0.join(name);
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\necho \"$*\" >> \"$ZIPFS_TEST_CALLS\"\nexec {real} \"$@\"\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let path = std::env::join_paths(std::iter::once(scratch.0.clone()).chain(
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+    ))
+    .unwrap();
+
+    let dir = MountDir::new("external");
+    let mut served = Served(
+        Command::new(ZIPFS)
+            .arg("--foreground")
+            .arg(&temp.path)
+            .arg(&dir.path)
+            .env("PATH", path)
+            .env("ZIPFS_TEST_CALLS", &log)
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    assert!(
+        wait_until(|| dir.path.join("hello.txt").exists()),
+        "the archive was not mounted"
+    );
+
+    // This does not go through the stand-in.
+    let status = Command::new(real)
+        .arg("-u")
+        .arg(&dir.path)
+        .status()
+        .unwrap();
+    assert!(status.success(), "unmount failed: {status}");
+    assert!(
+        wait_until(|| served.0.try_wait().unwrap().is_some()),
+        "zipfs did not stop after the unmount"
+    );
+
+    let calls = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(!calls.is_empty(), "the mount was not recorded");
+    let unmounts: Vec<&str> = calls
+        .lines()
+        .filter(|call| call.split(' ').any(|arg| arg == "-u"))
+        .collect();
+    assert!(unmounts.is_empty(), "unmounted again: {unmounts:?}");
 }

@@ -306,6 +306,21 @@ impl fuser::Filesystem for ZipFs {
         }
     }
 
+    /// Archives carry nothing that `getattr` cannot report. `ENOSYS` makes the
+    /// kernel use `getattr` from now on. This is fuser's default too, but the
+    /// default also logs a warning.
+    fn statx(
+        &self,
+        _req: &Request,
+        _ino: INodeNo,
+        _fh: Option<FileHandle>,
+        _flags: u32,
+        _mask: fuser::StatxMask,
+        reply: fuser::ReplyStatx,
+    ) {
+        reply.error(Errno::ENOSYS);
+    }
+
     fn readlink(&self, _req: &Request, ino: INodeNo, reply: ReplyData) {
         let Some(node) = self.index.node(ino.into()) else {
             reply.error(Errno::ENOENT);
@@ -347,7 +362,14 @@ impl fuser::Filesystem for ZipFs {
         reply.data(target);
     }
 
-    fn open(&self, _req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
+    fn open(
+        &self,
+        _req: &Request,
+        ino: INodeNo,
+        flags: OpenFlags,
+        _kill_suid_gid: bool,
+        reply: ReplyOpen,
+    ) {
         let ino = u64::from(ino);
         let Some(node) = self.index.node(ino) else {
             reply.error(Errno::ENOENT);
